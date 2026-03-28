@@ -133,12 +133,6 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             false
         }
 
-        config.dualPageSplitChangedListener = { enabled ->
-            if (!enabled) {
-                cleanupPageSplit()
-            }
-        }
-
         config.imagePropertyChangedListener = {
             refreshAdapter()
         }
@@ -455,6 +449,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         adapter.refresh()
         pager.adapter = adapter
         pager.setCurrentItem(currentItem, false)
+        onPageChange(currentItem)
     }
 
     /**

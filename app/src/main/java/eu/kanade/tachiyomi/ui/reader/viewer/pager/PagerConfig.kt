@@ -37,8 +37,6 @@ class PagerConfig(
     var automaticBackground = false
         private set
 
-    var dualPageSplitChangedListener: ((Boolean) -> Unit)? = null
-
     var imageScaleType = 1
         private set
 
@@ -88,15 +86,6 @@ class PagerConfig(
             .drop(1)
             .onEach { navigationModeChangedListener?.invoke() }
             .launchIn(scope)
-
-        readerPreferences.dualPageSplitPaged()
-            .register(
-                { dualPageSplit = it },
-                {
-                    imagePropertyChangedListener?.invoke()
-                    dualPageSplitChangedListener?.invoke(it)
-                },
-            )
 
         readerPreferences.dualPageInvertPaged()
             .register({ dualPageInvert = it }, { imagePropertyChangedListener?.invoke() })

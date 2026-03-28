@@ -504,14 +504,6 @@ class PagerPageHolder(
             return imageSource
         }
 
-        // Auto-shifting logic
-        if (page.index == 0 &&
-            !viewer.config.shiftDoublePage &&
-            ImageUtil.isPagePadded(bitmap1, rightSide = true) > 1
-        ) {
-            viewer.activity.viewModel.setDoublePageShift(true)
-        }
-
         val isLTR = viewer !is R2LPagerViewer
         val background = if (viewer.config.readerTheme == 2) Color.WHITE else Color.BLACK
 

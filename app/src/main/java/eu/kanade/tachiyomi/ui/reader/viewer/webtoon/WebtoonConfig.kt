@@ -70,9 +70,6 @@ class WebtoonConfig(
             .onEach { navigationModeChangedListener?.invoke() }
             .launchIn(scope)
 
-        readerPreferences.dualPageSplitWebtoon()
-            .register({ dualPageSplit = it }, { imagePropertyChangedListener?.invoke() })
-
         readerPreferences.dualPageInvertWebtoon()
             .register({ dualPageInvert = it }, { imagePropertyChangedListener?.invoke() })
 

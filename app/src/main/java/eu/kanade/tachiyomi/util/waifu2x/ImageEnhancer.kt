@@ -43,6 +43,9 @@ object ImageEnhancer {
     private var isFirstRequestAfterReset = false
 
     @Volatile
+    private var initialTargetEnqueued = false
+
+    @Volatile
     private var activeMangaId = -1L
 
     @Volatile
@@ -156,10 +159,19 @@ object ImageEnhancer {
     }
 
     fun enhance(context: Context, mangaId: Long, chapterId: Long, pageIndex: Int, data: Any, highPriority: Boolean, pageVariant: String = "") {
+        val isInitialTargetRequest = !initialTargetEnqueued && pageIndex == targetPageIndex
+        if (!highPriority && !initialTargetEnqueued && !isInitialTargetRequest) {
+            logcat(LogPriority.DEBUG) {
+                "ImageEnhancer: Deferring page $pageIndex/$pageVariant until initial target $targetPageIndex starts"
+            }
+            return
+        }
+
+        val effectiveHighPriority = highPriority || isInitialTargetRequest
         val requestKey = "${mangaId}_${chapterId}_${pageIndex}_${pageVariant}"
         
         if (pendingRequests.containsKey(requestKey)) {
-            if (highPriority) {
+            if (effectiveHighPriority) {
                  // Upgrade priority: Remove existing (likely Low) and re-add as High
                  val removed = queue.removeIf { 
                      it.mangaId == mangaId && it.chapterId == chapterId && it.pageIndex == pageIndex && it.pageVariant == pageVariant
@@ -180,7 +192,11 @@ object ImageEnhancer {
 
         if (pendingRequests.putIfAbsent(requestKey, Unit) != null) return
 
-        val priorityLevel = if (highPriority) 1 else 0
+        if (isInitialTargetRequest) {
+            initialTargetEnqueued = true
+        }
+
+        val priorityLevel = if (effectiveHighPriority) 1 else 0
         val req = EnhanceRequest(context, mangaId, chapterId, pageIndex, pageVariant, data, priorityLevel, seqGenerator.getAndIncrement())
         queue.offer(req)
         
@@ -197,6 +213,7 @@ object ImageEnhancer {
         seqGenerator.set(0)
         lastResetTime = System.currentTimeMillis()
         isFirstRequestAfterReset = true
+        initialTargetEnqueued = false
         logcat(LogPriority.DEBUG) { "ImageEnhancer: Resetting state to page $initialPageIndex" }
     }
 

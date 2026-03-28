@@ -122,35 +122,6 @@ private fun ColumnScope.PagerViewerSettings(screenModel: ReaderSettingsScreenMod
         }
     }
 
-    if (pageLayout == PageLayout.DOUBLE_PAGES.value ||
-        pageLayout == PageLayout.AUTOMATIC.value
-    ) {
-        val manga by screenModel.mangaFlow.collectAsState()
-        CheckboxItem(
-            label = stringResource(MR.strings.pref_dual_page_shift),
-            checked = manga?.readerOrientation?.toInt()?.let { (it and ReaderOrientation.SHIFT_DOUBLE_PAGE) != 0 } ?: false,
-            onClick = {
-                val current = manga?.readerOrientation?.toInt()?.let {
-                    (it and ReaderOrientation.SHIFT_DOUBLE_PAGE) != 0
-                } ?: false
-                screenModel.onChangeDoublePageShift(!current)
-            },
-        )
-    }
-
-    val dualPageSplitPaged by screenModel.preferences.dualPageSplitPaged().collectAsState()
-    CheckboxItem(
-        label = stringResource(MR.strings.pref_dual_page_split),
-        pref = screenModel.preferences.dualPageSplitPaged(),
-    )
-
-    if (dualPageSplitPaged) {
-        CheckboxItem(
-            label = stringResource(MR.strings.pref_dual_page_invert),
-            pref = screenModel.preferences.dualPageInvertPaged(),
-        )
-    }
-
     val dualPageRotateToFit by screenModel.preferences.dualPageRotateToFit().collectAsState()
     CheckboxItem(
         label = stringResource(MR.strings.pref_page_rotate),
@@ -196,19 +167,6 @@ private fun ColumnScope.WebtoonViewerSettings(screenModel: ReaderSettingsScreenM
         label = stringResource(MR.strings.pref_crop_borders),
         pref = screenModel.preferences.cropBordersWebtoon(),
     )
-
-    val dualPageSplitWebtoon by screenModel.preferences.dualPageSplitWebtoon().collectAsState()
-    CheckboxItem(
-        label = stringResource(MR.strings.pref_dual_page_split),
-        pref = screenModel.preferences.dualPageSplitWebtoon(),
-    )
-
-    if (dualPageSplitWebtoon) {
-        CheckboxItem(
-            label = stringResource(MR.strings.pref_dual_page_invert),
-            pref = screenModel.preferences.dualPageInvertWebtoon(),
-        )
-    }
 
     val dualPageRotateToFitWebtoon by screenModel.preferences.dualPageRotateToFitWebtoon().collectAsState()
     CheckboxItem(
