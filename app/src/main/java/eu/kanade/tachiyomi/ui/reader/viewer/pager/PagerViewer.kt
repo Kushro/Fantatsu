@@ -56,6 +56,9 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
      */
     private var currentPage: Any? = null
 
+    private var currentReaderPage: ReaderPage? = null
+    private var pendingSelectedPage: ReaderPage? = null
+
     /**
      * Viewer chapters to set when the pager enters idle mode. Otherwise, if the view was settling
      * or dragging, there'd be a noticeable and annoying jump.
@@ -140,6 +143,10 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             refreshAdapter()
         }
 
+        config.reloadChapterListener = {
+            activity.viewModel.state.value.viewerChapters?.let(::setChapters)
+        }
+
         config.navigationModeChangedListener = {
             val showOnStart = config.navigationOverlayOnStart || config.forceNavigationOverlay
             activity.binding.navigationOverlay.setNavigation(config.navigator, showOnStart)
@@ -169,34 +176,54 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     private fun getPageHolder(page: ReaderPage): PagerPageHolder? =
         pager.children
             .filterIsInstance(PagerPageHolder::class.java)
-            .firstOrNull { it.item.first.index == page.index || it.item.second?.index == page.index }
+            .firstOrNull {
+                (it.item.first as? ReaderPage)?.isFromSamePage(page) == true ||
+                    (it.item.second as? ReaderPage)?.isFromSamePage(page) == true
+            }
 
     /**
      * Called when a new page (either a [ReaderPage] or [ChapterTransition]) is marked as active
      */
     private fun onPageChange(position: Int) {
-        val page = adapter.joinedItems.getOrNull(position)
-        if (page != null && currentPage != page) {
-            val pageF = page.first
-            val allowPreload = checkAllowPreload(pageF as? ReaderPage)
+        val page = adapter.joinedItems.getOrNull(position) ?: return
+        val preferredReaderPage = pendingSelectedPage?.takeIf { selected ->
+            page.first == selected || page.second == selected
+        }
+        val retainedReaderPage = currentReaderPage?.takeIf { selected ->
+            (page.first as? ReaderPage)?.isFromSamePage(selected) == true ||
+                (page.second as? ReaderPage)?.isFromSamePage(selected) == true
+        }
+        val activeItem = preferredReaderPage ?: retainedReaderPage ?: adapter.getActiveReaderPage(position) ?: page.first
+        logcat {
+            "PagerViewer.onPageChange: position=$position, " +
+                "pairFirst=${(page.first as? ReaderPage)?.number}/${(page.first as? ReaderPage)?.index}, " +
+                "pairSecond=${(page.second as? ReaderPage)?.number}/${(page.second as? ReaderPage)?.index}, " +
+                "preferred=${preferredReaderPage?.number}/${preferredReaderPage?.index}, " +
+                "retained=${retainedReaderPage?.number}/${retainedReaderPage?.index}, " +
+                "active=${(activeItem as? ReaderPage)?.number}/${(activeItem as? ReaderPage)?.index}, " +
+                "currentReader=${currentReaderPage?.number}/${currentReaderPage?.index}"
+        }
+        if (activeItem != null && currentPage != activeItem) {
+            val allowPreload = checkAllowPreload(activeItem as? ReaderPage)
             val forward = when {
-                currentPage is ReaderPage && pageF is ReaderPage -> {
+                currentPage is ReaderPage && activeItem is ReaderPage -> {
                     // if both pages have the same number, it's a split page with an InsertPage
-                    if (pageF.number == (currentPage as ReaderPage).number) {
+                    if (activeItem.number == (currentPage as ReaderPage).number) {
                         // the InsertPage is always the second in the reading direction
-                        pageF is InsertPage
+                        activeItem is InsertPage
                     } else {
-                        pageF.number > (currentPage as ReaderPage).number
+                        activeItem.number > (currentPage as ReaderPage).number
                     }
                 }
-                currentPage is ChapterTransition.Prev && pageF is ReaderPage ->
+                currentPage is ChapterTransition.Prev && activeItem is ReaderPage ->
                     false
                 else -> true
             }
-            currentPage = pageF
-            when (pageF) {
-                is ReaderPage -> onReaderPageSelected(pageF, allowPreload, page.second is ReaderPage, forward)
-                is ChapterTransition -> onTransitionSelected(pageF)
+            currentPage = activeItem
+            pendingSelectedPage = null
+            when (activeItem) {
+                is ReaderPage -> onReaderPageSelected(activeItem, allowPreload, page.second is ReaderPage, forward)
+                is ChapterTransition -> onTransitionSelected(activeItem)
                 else -> {}
             }
         }
@@ -227,12 +254,11 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
      */
     private fun onReaderPageSelected(page: ReaderPage, allowPreload: Boolean, hasExtraPage: Boolean, forward: Boolean) {
         val pages = page.chapter.pages ?: return
-        if (hasExtraPage) {
-            logcat { "onReaderPageSelected: ${page.number}-${page.number + 1}/${pages.size}" }
-        } else {
-            logcat { "onReaderPageSelected: ${page.number}/${pages.size}" }
-        }
-        activity.onPageSelected(page, hasExtraPage)
+        val currentPageNumber = page.number
+        val totalPageCount = pages.size
+        currentReaderPage = page
+        logcat { "onReaderPageSelected: ${currentPageNumber}/${totalPageCount}" }
+        activity.onPageSelected(page, hasExtraPage, currentPageNumber, totalPageCount)
 
         // Notify holder of page change
         getPageHolder(page)?.onPageSelected(forward)
@@ -287,13 +313,22 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
 
         val forceTransition = config.alwaysShowChapterTransition ||
             adapter.joinedItems.getOrNull(pager.currentItem)?.first is ChapterTransition
-        adapter.setChapters(chapters, forceTransition)
+        val anchorPage = getCurrentReaderPage()
+        logcat {
+            "PagerViewer.setChaptersInternal: requestedPage=${chapters.currChapter.requestedPage}, " +
+                "anchor=${anchorPage?.number}/${anchorPage?.index}, currentItem=${pager.currentItem}, " +
+                "doublePages=${config.doublePages}"
+        }
+        adapter.setChapters(chapters, forceTransition, anchorPage)
+        val positionWasRestored = adapter.restoredPosition
 
         // Layout the pager once a chapter is being set
         if (pager.isGone) {
             logcat { "Pager first layout" }
-            val pages = chapters.currChapter.pages ?: return
-            moveToPage(pages[min(chapters.currChapter.requestedPage, pages.lastIndex)])
+            if (!positionWasRestored) {
+                val pages = chapters.currChapter.pages ?: return
+                moveToPage(pages[min(chapters.currChapter.requestedPage, pages.lastIndex)])
+            }
             pager.isVisible = true
         }
 
@@ -306,9 +341,10 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
      * Tells this viewer to move to the given [page].
      */
     override fun moveToPage(page: ReaderPage) {
-        val position = adapter.joinedItems.indexOfFirst { it.first == page || it.second == page }
+        val position = adapter.getPositionForPage(page)
         if (position != -1) {
             val currentPosition = pager.currentItem
+            pendingSelectedPage = page
             pager.setCurrentItem(position, true)
             // manually call onPageChange since ViewPager listener is not triggered in this case
             if (currentPosition == position) {
@@ -316,6 +352,39 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             }
         } else {
             logcat { "Page $page not found in adapter" }
+        }
+    }
+
+    fun moveToDisplayPage(index: Int) {
+        adapter.getDisplayPage(index)?.let(::moveToPage)
+    }
+
+    internal fun setPendingSelectedPage(page: ReaderPage?) {
+        pendingSelectedPage = page
+    }
+
+    fun getCurrentReaderPage(): ReaderPage? {
+        return currentReaderPage ?: when (val active = currentPage) {
+            is InsertPage -> active.parent
+            is ReaderPage -> active
+            else -> null
+        }
+    }
+
+    fun refreshAutomaticPageLayout() {
+        val currentPage = getCurrentReaderPage()
+        val oldDoublePages = config.doublePages
+        logcat {
+            "PagerViewer.refreshAutomaticPageLayout: current=${currentPage?.number}/${currentPage?.index}, " +
+                "oldDoublePages=$oldDoublePages"
+        }
+        config.refreshAutomaticPageLayout()
+        logcat {
+            "PagerViewer.refreshAutomaticPageLayout: newDoublePages=${config.doublePages}"
+        }
+
+        if (config.doublePages == oldDoublePages) {
+            currentPage?.let(::moveToPage)
         }
     }
 
@@ -455,6 +524,12 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         activity.runOnUiThread {
             // Need to insert on UI thread else images will go blank
             adapter.onPageSplit(currentPage, newPage)
+        }
+    }
+
+    fun onWidePageDetected(page: ReaderPage) {
+        activity.runOnUiThread {
+            adapter.onWidePageDetected(page)
         }
     }
 

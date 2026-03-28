@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
+import android.content.res.Configuration
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerConfig
@@ -24,7 +25,11 @@ class PagerConfig(
     private val viewer: PagerViewer,
     scope: CoroutineScope,
     readerPreferences: ReaderPreferences = Injekt.get(),
-) : ViewerConfig(readerPreferences, scope) {
+) : ViewerConfig(
+    readerPreferences,
+    scope,
+    isLandscape = { viewer.activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE },
+) {
 
     var theme = readerPreferences.readerTheme().get()
         private set
@@ -149,6 +154,39 @@ class PagerConfig(
             .onEach { 
                 eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(viewer.activity)
                 imagePropertyChangedListener?.invoke() 
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganMaxSizeWidth().changes()
+            .drop(1)
+            .debounce(500)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(viewer.activity)
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganMaxSizeHeight().changes()
+            .drop(1)
+            .debounce(500)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(viewer.activity)
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganResizeLargeImage().changes()
+            .drop(1)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(viewer.activity)
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganShowStatus().changes()
+            .drop(1)
+            .onEach {
+                imagePropertyChangedListener?.invoke()
             }
             .launchIn(scope)
 

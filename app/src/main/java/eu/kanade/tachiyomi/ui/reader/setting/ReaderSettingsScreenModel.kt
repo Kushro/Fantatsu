@@ -15,6 +15,7 @@ class ReaderSettingsScreenModel(
     readerState: StateFlow<ReaderViewModel.State>,
     val onChangeReadingMode: (ReadingMode) -> Unit,
     val onChangeOrientation: (ReaderOrientation) -> Unit,
+    val onChangeDoublePageShift: (Boolean) -> Unit,
     val preferences: ReaderPreferences = Injekt.get(),
 ) : ScreenModel {
 

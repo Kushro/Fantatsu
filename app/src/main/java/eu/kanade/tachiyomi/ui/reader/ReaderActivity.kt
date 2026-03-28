@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
@@ -51,6 +52,7 @@ import eu.kanade.core.util.ifSourcesLoaded
 import eu.kanade.domain.base.BasePreferences
 import eu.kanade.presentation.reader.DisplayRefreshHost
 import eu.kanade.presentation.reader.OrientationSelectDialog
+import eu.kanade.presentation.reader.PageLayoutSelectDialog
 import eu.kanade.presentation.reader.ReaderContentOverlay
 import eu.kanade.presentation.reader.ReaderPageActionsDialog
 import eu.kanade.presentation.reader.ReaderPageIndicator
@@ -99,6 +101,7 @@ import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.launchNonCancellable
 import tachiyomi.core.common.util.lang.withUIContext
+import tachiyomi.core.common.util.system.logcat
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.util.collectAsState
@@ -268,6 +271,7 @@ class ReaderActivity : BaseActivity() {
                 readerState = viewModel.state,
                 onChangeReadingMode = viewModel::setMangaReadingMode,
                 onChangeOrientation = viewModel::setMangaOrientationType,
+                onChangeDoublePageShift = viewModel::setDoublePageShift,
             )
         }
 
@@ -324,6 +328,16 @@ class ReaderActivity : BaseActivity() {
                     },
                 )
             }
+            is ReaderViewModel.Dialog.PageLayoutSelect -> {
+                PageLayoutSelectDialog(
+                    onDismissRequest = onDismissRequest,
+                    screenModel = settingsScreenModel,
+                    onChange = { stringRes ->
+                        menuToggleToast?.cancel()
+                        menuToggleToast = toast(stringRes)
+                    },
+                )
+            }
             is ReaderViewModel.Dialog.OrientationModeSelect -> {
                 OrientationSelectDialog(
                     onDismissRequest = onDismissRequest,
@@ -359,10 +373,16 @@ class ReaderActivity : BaseActivity() {
     }
 
     override fun onPause() {
+        persistCurrentPagerPage()
         lifecycleScope.launchNonCancellable {
             viewModel.updateHistory()
         }
         super.onPause()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        persistCurrentPagerPage()
+        super.onSaveInstanceState(outState)
     }
 
     /**
@@ -487,6 +507,7 @@ class ReaderActivity : BaseActivity() {
 
         val cropBorderPaged by readerPreferences.cropBorders().collectAsState()
         val cropBorderWebtoon by readerPreferences.cropBordersWebtoon().collectAsState()
+        val imageEnhancementEnabled by readerPreferences.realCuganEnabled().collectAsState()
         val isPagerType = ReadingMode.isPagerType(viewModel.getMangaReadingMode())
         val cropEnabled = if (isPagerType) cropBorderPaged else cropBorderWebtoon
 
@@ -519,6 +540,7 @@ class ReaderActivity : BaseActivity() {
                 viewModel.getMangaReadingMode(resolveDefault = false),
             ),
             onClickReadingMode = viewModel::openReadingModeSelectDialog,
+            onClickPageLayout = viewModel::openPageLayoutSelectDialog,
             orientation = ReaderOrientation.fromPreference(
                 viewModel.getMangaOrientation(resolveDefault = false),
             ),
@@ -528,6 +550,17 @@ class ReaderActivity : BaseActivity() {
                 val enabled = viewModel.toggleCropBorders()
                 menuToggleToast?.cancel()
                 menuToggleToast = toast(if (enabled) MR.strings.on else MR.strings.off)
+            },
+            imageEnhancementEnabled = imageEnhancementEnabled,
+            onClickImageEnhancement = {
+                val enabled = viewModel.toggleImageEnhancement()
+                menuToggleToast?.cancel()
+                menuToggleToast = toast(
+                    stringResource(
+                        MR.strings.reader_image_enhancement_toast,
+                        stringResource(if (enabled) MR.strings.on else MR.strings.off),
+                    ),
+                )
             },
             onClickSettings = viewModel::openSettingsDialog,
         )
@@ -670,6 +703,10 @@ class ReaderActivity : BaseActivity() {
      */
     private fun moveToPageIndex(index: Int) {
         val viewer = viewModel.state.value.viewer ?: return
+        if (viewer is eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer) {
+            viewer.moveToDisplayPage(index)
+            return
+        }
         val currentChapter = viewModel.state.value.currentChapter ?: return
         val page = currentChapter.pages?.getOrNull(index) ?: return
         viewer.moveToPage(page)
@@ -701,8 +738,35 @@ class ReaderActivity : BaseActivity() {
      * Called from the viewer whenever a [page] is marked as active. It updates the values of the
      * bottom menu and delegates the change to the presenter.
      */
-    fun onPageSelected(page: ReaderPage, hasExtraPage: Boolean = false) {
-        viewModel.onPageSelected(page, hasExtraPage)
+    fun onPageSelected(
+        page: ReaderPage,
+        hasExtraPage: Boolean = false,
+        displayCurrentPage: Int = page.number,
+        displayTotalPages: Int? = null,
+    ) {
+        viewModel.onPageSelected(page, hasExtraPage, displayCurrentPage, displayTotalPages)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        logcat {
+            "ReaderActivity.onConfigurationChanged: orientation=${newConfig.orientation}, " +
+                "currentPage=${viewModel.state.value.currentPage}, totalPages=${viewModel.state.value.totalPages}"
+        }
+        persistCurrentPagerPage()
+        super.onConfigurationChanged(newConfig)
+        (viewModel.state.value.viewer as? eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer)
+            ?.refreshAutomaticPageLayout()
+    }
+
+    private fun persistCurrentPagerPage() {
+        val page = (viewModel.state.value.viewer as? eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer)
+            ?.getCurrentReaderPage()
+            ?: return
+        logcat {
+            "ReaderActivity.persistCurrentPagerPage: page=${page.number}, index=${page.index}, " +
+                "chapter=${page.chapter.chapter.id}"
+        }
+        viewModel.saveCurrentPageForRestore(page)
     }
 
     /**

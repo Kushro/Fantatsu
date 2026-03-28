@@ -2,7 +2,12 @@ package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Color
 import android.view.LayoutInflater
+import android.view.Gravity
+import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.util.TypedValue
+import android.widget.TextView
 import androidx.core.view.isVisible
 import eu.kanade.presentation.util.formattedMessage
 import eu.kanade.tachiyomi.databinding.ReaderErrorBinding
@@ -11,25 +16,32 @@ import eu.kanade.tachiyomi.ui.reader.model.InsertPage
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
+import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
+import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache
+import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancer
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import logcat.LogPriority
 import okio.Buffer
 import okio.BufferedSource
-import tachiyomi.core.common.i18n.stringResource
 import android.graphics.BitmapFactory
-import android.graphics.Color
+import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.i18n.MR
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 
 /**
  * View of the ViewPager that contains a page of a chapter.
@@ -71,13 +83,25 @@ class PagerPageHolder(
      * Job for loading the extra page and processing changes to its status.
      */
     private var extraLoadJob: Job? = null
+    private var extraEnhancementWatchJob: Job? = null
+    private var extraEnhancementState: String? = null
+    private var halfStatusJob: Job? = null
+
+    private val readerPreferences by lazy { Injekt.get<ReaderPreferences>() }
+    private val leftStatusView by lazy { createHalfStatusView(Gravity.BOTTOM or Gravity.START) }
+    private val rightStatusView by lazy { createHalfStatusView(Gravity.BOTTOM or Gravity.END) }
 
     init {
         // Set page index for enhancement priority tracking
         pageIndex = page.index
         mangaId = viewer.activity.viewModel.manga?.id ?: -1L
         chapterId = page.chapter.chapter.id ?: -1L
+        refreshEnhancementTargets()
         readerPage = page
+        suppressDefaultStatus = extraPage != null
+        if (usesTransformedEnhancedDisplay()) {
+            enhancedImageSourceFactory = { buildEnhancedDisplaySource(it) }
+        }
         loadJob = scope.launch { loadPageAndProcessStatus() }
     }
 
@@ -91,6 +115,26 @@ class PagerPageHolder(
         loadJob = null
         extraLoadJob?.cancel()
         extraLoadJob = null
+        extraEnhancementWatchJob?.cancel()
+        extraEnhancementWatchJob = null
+        halfStatusJob?.cancel()
+        halfStatusJob = null
+    }
+
+    private fun createHalfStatusView(gravity: Int): TextView {
+        return TextView(context).apply {
+            layoutParams = LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+                this.gravity = gravity
+                setMargins(20, 0, 20, 20)
+            }
+            setTextColor(Color.WHITE)
+            setShadowLayer(5f, 0f, 0f, Color.BLACK)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setBackgroundColor(Color.TRANSPARENT)
+            setPadding(0, 0, 0, 0)
+            isVisible = false
+            this@PagerPageHolder.addView(this)
+        }
     }
 
     private fun initProgressIndicator() {
@@ -181,17 +225,17 @@ class PagerPageHolder(
      * Called when the page is ready.
      */
     private suspend fun setImage() {
-        android.util.Log.d("PagerPageHolder", "setImage() called for page ${page.index}")
         progressIndicator?.setProgress(0)
+        refreshEnhancementTargets()
 
         val streamFn = page.stream ?: return
         val streamFn2 = extraPage?.stream
 
         try {
             val (source, isAnimated, background) = withIOContext {
-                val source = streamFn().use { s1 ->
+                val source = currentDisplayStream(page)?.use { s1 ->
                     if (extraPage != null) {
-                        streamFn2?.invoke()?.use { s2 ->
+                        currentDisplayStream(extraPage!!)?.use { s2 ->
                             mergeOrSplitPages(Buffer().readFrom(s1), Buffer().readFrom(s2))
                         }
                     } else {
@@ -217,13 +261,17 @@ class PagerPageHolder(
                         zoomStartPosition = viewer.config.imageZoomType,
                         landscapeZoom = viewer.config.landscapeZoom,
                     ),
-                    streamFn,
+                    streamFn.takeUnless { usesTransformedEnhancedDisplay() },
                 )
                 if (!isAnimated) {
                     pageBackground = background
                 }
                 removeErrorLayout()
+                startExtraEnhancementWatcherIfNeeded()
+                startHalfStatusWatcherIfNeeded()
             }
+        } catch (_: CancellationException) {
+            return
         } catch (e: Throwable) {
             logcat(LogPriority.ERROR, e)
             withUIContext {
@@ -232,9 +280,221 @@ class PagerPageHolder(
         }
     }
 
+    private fun usesTransformedEnhancedDisplay(): Boolean {
+        return extraPage != null || viewer.config.dualPageRotateToFit
+    }
+
+    private fun refreshEnhancementTargets() {
+        enhancementVariantOverride = enhancementVariantFor(page)
+        enhancementStreamOverride = enhancementStreamFor(page)
+    }
+
+    private fun enhancementVariantFor(targetPage: ReaderPage): String {
+        return ""
+    }
+
+    private fun enhancementStreamFor(targetPage: ReaderPage): (() -> java.io.InputStream)? {
+        return null
+    }
+
+    private fun buildSplitEnhancementStream(targetPage: ReaderPage): (() -> java.io.InputStream)? {
+        return {
+            val originalStream = targetPage.stream ?: error("Missing source stream for split enhancement")
+            val source = Buffer().readFrom(originalStream())
+            if (!viewer.config.dualPageSplit || !isWideImage(source)) {
+                source.inputStream()
+            } else {
+                ImageUtil.splitInHalf(source, splitSideFor(targetPage)).inputStream()
+            }
+        }
+    }
+
+    private fun currentDisplayStream(targetPage: ReaderPage, preferredEnhancedFile: java.io.File? = null): java.io.InputStream? {
+        val enhancedFile = preferredEnhancedFile ?: currentEnhancedFile(targetPage)
+        return try {
+            when {
+                enhancedFile != null -> enhancedFile.inputStream()
+                targetPage is InsertPage && enhancementStreamFor(targetPage) != null -> enhancementStreamFor(targetPage)?.invoke()
+                else -> targetPage.stream?.invoke()
+            }
+        } catch (_: Throwable) {
+            targetPage.stream?.invoke()
+        }
+    }
+
+    private fun currentEnhancedFile(targetPage: ReaderPage): java.io.File? {
+        if (!readerPreferences.realCuganEnabled().get()) return null
+        val mangaId = viewer.activity.viewModel.manga?.id ?: return null
+        val chapterId = targetPage.chapter.chapter.id ?: return null
+        ImageEnhancementCache.init(context)
+        val configHash = ImageEnhancementCache.getConfigHash(
+            readerPreferences.realCuganNoiseLevel().get(),
+            readerPreferences.realCuganScale().get(),
+            readerPreferences.realCuganInputScale().get(),
+            readerPreferences.realCuganModel().get(),
+            readerPreferences.realCuganMaxSizeWidth().get(),
+            readerPreferences.realCuganMaxSizeHeight().get(),
+            true,
+        )
+        return ImageEnhancementCache.getCachedImage(mangaId, chapterId, targetPage.index, configHash, enhancementVariantFor(targetPage))
+    }
+
+    private fun currentEnhancementState(targetPage: ReaderPage): String {
+        if (!readerPreferences.realCuganEnabled().get()) return "disabled"
+        val mangaId = viewer.activity.viewModel.manga?.id ?: return "missing-manga"
+        val chapterId = targetPage.chapter.chapter.id ?: return "missing-chapter"
+        ImageEnhancementCache.init(context)
+        val configHash = ImageEnhancementCache.getConfigHash(
+            readerPreferences.realCuganNoiseLevel().get(),
+            readerPreferences.realCuganScale().get(),
+            readerPreferences.realCuganInputScale().get(),
+            readerPreferences.realCuganModel().get(),
+            readerPreferences.realCuganMaxSizeWidth().get(),
+            readerPreferences.realCuganMaxSizeHeight().get(),
+            true,
+        )
+        return when {
+            ImageEnhancementCache.isSkipped(mangaId, chapterId, targetPage.index, configHash, enhancementVariantFor(targetPage)) -> "skipped"
+            ImageEnhancementCache.isCached(mangaId, chapterId, targetPage.index, configHash, enhancementVariantFor(targetPage)) -> "cached"
+            else -> "raw"
+        }
+    }
+
+    private fun buildEnhancedDisplaySource(primaryEnhancedFile: java.io.File): BufferedSource? {
+        val primaryStream = currentDisplayStream(page, primaryEnhancedFile) ?: return null
+        return primaryStream.use { s1 ->
+            if (extraPage != null) {
+                val extraStream = currentDisplayStream(extraPage!!) ?: return null
+                extraStream.use { s2 ->
+                    mergeOrSplitPages(Buffer().readFrom(s1), Buffer().readFrom(s2))
+                }
+            } else {
+                process(item, Buffer().readFrom(s1))
+            }
+        }
+    }
+
+    private fun startExtraEnhancementWatcherIfNeeded() {
+        val targetPage = extraPage ?: return
+        if (!usesTransformedEnhancedDisplay() || !readerPreferences.realCuganEnabled().get()) return
+
+        val initialState = currentEnhancementState(targetPage)
+        if (extraEnhancementWatchJob != null && extraEnhancementState == initialState) return
+
+        extraEnhancementWatchJob?.cancel()
+        extraEnhancementState = initialState
+        extraEnhancementWatchJob = scope.launch {
+            while (isActive) {
+                val newState = currentEnhancementState(targetPage)
+                if (newState != extraEnhancementState) {
+                    val previousState = extraEnhancementState
+                    extraEnhancementState = newState
+                    if (
+                        newState == "cached" &&
+                        previousState != "cached" &&
+                        page.status == Page.State.Ready &&
+                        targetPage.status == Page.State.Ready
+                    ) {
+                        setImage()
+                    }
+                }
+                delay(500)
+            }
+        }
+    }
+
+    private fun startHalfStatusWatcherIfNeeded() {
+        if (extraPage == null) {
+            leftStatusView.isVisible = false
+            rightStatusView.isVisible = false
+            halfStatusJob?.cancel()
+            halfStatusJob = null
+            return
+        }
+
+        suppressDefaultStatus = true
+        halfStatusJob?.cancel()
+        halfStatusJob = scope.launch {
+            while (isActive) {
+                withUIContext {
+                    if (!readerPreferences.realCuganEnabled().get() || !readerPreferences.realCuganShowStatus().get()) {
+                        leftStatusView.isVisible = false
+                        rightStatusView.isVisible = false
+                    } else {
+                        val leftPage = if (viewer is R2LPagerViewer) extraPage else page
+                        val rightPage = if (viewer is R2LPagerViewer) page else extraPage
+                        updateHalfStatusView(leftStatusView, leftPage)
+                        updateHalfStatusView(rightStatusView, rightPage)
+                    }
+                }
+                delay(300)
+            }
+        }
+    }
+
+    private fun updateHalfStatusView(view: TextView, targetPage: ReaderPage?) {
+        val label = enhancementStatusLabel(targetPage)
+        view.text = label
+        view.isVisible = !label.isNullOrEmpty()
+        if (view.isVisible) {
+            view.bringToFront()
+        }
+    }
+
+    private fun enhancementStatusLabel(targetPage: ReaderPage?): String? {
+        targetPage ?: return null
+        if (!readerPreferences.realCuganEnabled().get()) return null
+
+        val mangaId = viewer.activity.viewModel.manga?.id ?: return null
+        val chapterId = targetPage.chapter.chapter.id ?: return null
+        ImageEnhancementCache.init(context)
+        val configHash = ImageEnhancementCache.getConfigHash(
+            readerPreferences.realCuganNoiseLevel().get(),
+            readerPreferences.realCuganScale().get(),
+            readerPreferences.realCuganInputScale().get(),
+            readerPreferences.realCuganModel().get(),
+            readerPreferences.realCuganMaxSizeWidth().get(),
+            readerPreferences.realCuganMaxSizeHeight().get(),
+            true,
+        )
+
+        return when {
+            ImageEnhancementCache.isCached(mangaId, chapterId, targetPage.index, configHash, enhancementVariantFor(targetPage)) ->
+                context.stringResource(MR.strings.reader_status_processed)
+            ImageEnhancementCache.isSkipped(mangaId, chapterId, targetPage.index, configHash, enhancementVariantFor(targetPage)) ->
+                context.stringResource(MR.strings.reader_status_raw)
+            ImageEnhancer.isActivelyProcessing(mangaId, chapterId, targetPage.index, enhancementVariantFor(targetPage)) -> {
+                val rawProgress = eu.kanade.tachiyomi.util.waifu2x.Waifu2x.getProgressPercent()
+                if (rawProgress in 0..100) {
+                    context.stringResource(MR.strings.reader_status_enhancing_progress, rawProgress)
+                } else {
+                    context.stringResource(MR.strings.reader_status_enhancing)
+                }
+            }
+            ImageEnhancer.hasRequest(mangaId, chapterId, targetPage.index, enhancementVariantFor(targetPage)) ->
+                context.stringResource(MR.strings.reader_status_queued)
+            else -> context.stringResource(MR.strings.reader_status_raw)
+        }
+    }
+
     private fun mergeOrSplitPages(imageSource: BufferedSource, imageSource2: BufferedSource?): BufferedSource? {
         if (imageSource2 == null) {
             return process(item, imageSource)
+        }
+
+        if (viewer.config.doublePages) {
+            val primaryWide = isWideImage(imageSource)
+            if (primaryWide) {
+                viewer.onWidePageDetected(page)
+                return imageSource
+            }
+
+            val secondaryPage = extraPage
+            val secondaryWide = secondaryPage != null && isWideImage(imageSource2)
+            if (secondaryWide) {
+                viewer.onWidePageDetected(secondaryPage!!)
+                return imageSource2
+            }
         }
 
         val bitmap1 = BitmapFactory.decodeStream(imageSource.inputStream())
@@ -270,26 +530,18 @@ class PagerPageHolder(
             return rotateDualPage(imageSource)
         }
 
-        if (!viewer.config.dualPageSplit) {
+        if (!viewer.config.doublePages) {
             return imageSource
         }
 
-        if (page is InsertPage) {
-            return splitInHalf(imageSource)
+        if (isWideImage(imageSource)) {
+            viewer.onWidePageDetected(page)
         }
-
-        val isDoublePage = ImageUtil.isWideImage(imageSource)
-        if (!isDoublePage) {
-            return imageSource
-        }
-
-        onPageSplit(page)
-
-        return splitInHalf(imageSource)
+        return imageSource
     }
 
     private fun rotateDualPage(imageSource: BufferedSource): BufferedSource {
-        val isDoublePage = ImageUtil.isWideImage(imageSource)
+        val isDoublePage = isWideImage(imageSource)
         return if (isDoublePage) {
             val rotation = if (viewer.config.dualPageRotateToFitInvert) -90f else 90f
             ImageUtil.rotateImage(imageSource, rotation)
@@ -298,12 +550,16 @@ class PagerPageHolder(
         }
     }
 
-    private fun splitInHalf(imageSource: BufferedSource): BufferedSource {
+    private fun splitInHalf(imageSource: BufferedSource, targetPage: ReaderPage = page): BufferedSource {
+        return ImageUtil.splitInHalf(imageSource, splitSideFor(targetPage))
+    }
+
+    private fun splitSideFor(targetPage: ReaderPage): ImageUtil.Side {
         var side = when {
-            viewer is L2RPagerViewer && page is InsertPage -> ImageUtil.Side.RIGHT
-            viewer !is L2RPagerViewer && page is InsertPage -> ImageUtil.Side.LEFT
-            viewer is L2RPagerViewer && page !is InsertPage -> ImageUtil.Side.LEFT
-            viewer !is L2RPagerViewer && page !is InsertPage -> ImageUtil.Side.RIGHT
+            viewer is L2RPagerViewer && targetPage is InsertPage -> ImageUtil.Side.RIGHT
+            viewer !is L2RPagerViewer && targetPage is InsertPage -> ImageUtil.Side.LEFT
+            viewer is L2RPagerViewer && targetPage !is InsertPage -> ImageUtil.Side.LEFT
+            viewer !is L2RPagerViewer && targetPage !is InsertPage -> ImageUtil.Side.RIGHT
             else -> error("We should choose a side!")
         }
 
@@ -314,7 +570,11 @@ class PagerPageHolder(
             }
         }
 
-        return ImageUtil.splitInHalf(imageSource, side)
+        return side
+    }
+
+    private fun isWideImage(imageSource: BufferedSource): Boolean {
+        return ImageUtil.isWideImage(imageSource.peek())
     }
 
     private fun onPageSplit(page: ReaderPage) {
@@ -333,6 +593,17 @@ class PagerPageHolder(
     override fun onImageLoaded() {
         super.onImageLoaded()
         progressIndicator?.hide()
+    }
+
+    override fun onPageSelected(forward: Boolean) {
+        super.onPageSelected(forward)
+        ImageEnhancer.reprioritizeAround(
+            pageIndex = page.index,
+            pageVariant = enhancementVariantFor(page),
+            secondaryPageIndex = extraPage?.index,
+            secondaryPageVariant = extraPage?.let(::enhancementVariantFor).orEmpty(),
+        )
+        ensureVisibleExtraPageEnhancement()
     }
 
     /**
@@ -387,5 +658,60 @@ class PagerPageHolder(
     private fun removeErrorLayout() {
         errorLayout?.root?.isVisible = false
         errorLayout = null
+    }
+
+    private fun ensureVisibleExtraPageEnhancement() {
+        val targetPage = extraPage ?: return
+        if (!readerPreferences.realCuganEnabled().get()) return
+
+        val mangaId = viewer.activity.viewModel.manga?.id ?: return
+        val chapterId = targetPage.chapter.chapter.id ?: return
+        targetPage.stream ?: return
+
+        ImageEnhancementCache.init(context)
+        val configHash = ImageEnhancementCache.getConfigHash(
+            readerPreferences.realCuganNoiseLevel().get(),
+            readerPreferences.realCuganScale().get(),
+            readerPreferences.realCuganInputScale().get(),
+            readerPreferences.realCuganModel().get(),
+            readerPreferences.realCuganMaxSizeWidth().get(),
+            readerPreferences.realCuganMaxSizeHeight().get(),
+            true,
+        )
+
+        val pageVariant = enhancementVariantFor(targetPage)
+        if (ImageEnhancementCache.isCached(mangaId, chapterId, targetPage.index, configHash, pageVariant)) {
+            return
+        }
+
+        if (ImageEnhancementCache.isSkipped(mangaId, chapterId, targetPage.index, configHash, pageVariant)) {
+            ImageEnhancementCache.removeSkipMarker(mangaId, chapterId, targetPage.index, configHash, pageVariant)
+        }
+
+        logcat(LogPriority.DEBUG) {
+            "PagerPageHolder: Prioritizing visible extra page ${targetPage.index}/$pageVariant"
+        }
+        val triggerData = enhancementStreamFor(targetPage)?.let { streamFn ->
+            try {
+                Buffer().readFrom(streamFn())
+            } catch (_: Exception) {
+                null
+            }
+        } ?: targetPage.stream?.let { streamFn ->
+            try {
+                Buffer().readFrom(streamFn())
+            } catch (_: Exception) {
+                null
+            }
+        } ?: targetPage.imageUrl ?: return
+        ImageEnhancer.enhance(
+            context.applicationContext,
+            mangaId,
+            chapterId,
+            targetPage.index,
+            triggerData,
+            true,
+            pageVariant,
+        )
     }
 }

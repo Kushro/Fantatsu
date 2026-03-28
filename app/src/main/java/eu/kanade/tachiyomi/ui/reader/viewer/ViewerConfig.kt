@@ -11,7 +11,11 @@ import tachiyomi.core.common.preference.Preference
 /**
  * Common configuration for all viewers.
  */
-abstract class ViewerConfig(readerPreferences: ReaderPreferences, private val scope: CoroutineScope) {
+abstract class ViewerConfig(
+    readerPreferences: ReaderPreferences,
+    private val scope: CoroutineScope,
+    private val isLandscape: () -> Boolean = { false },
+) {
 
     var imagePropertyChangedListener: (() -> Unit)? = null
 
@@ -66,6 +70,8 @@ abstract class ViewerConfig(readerPreferences: ReaderPreferences, private val sc
     var splitPages = false
     var autoSplitPages = false
 
+    private var pageLayoutPreference = readerPreferences.pageLayout().get()
+
     abstract var navigator: ViewerNavigation
         protected set
 
@@ -101,10 +107,13 @@ abstract class ViewerConfig(readerPreferences: ReaderPreferences, private val sc
 
         readerPreferences.pageLayout()
             .register({
+                pageLayoutPreference = it
                 autoDoublePages = it == PageLayout.AUTOMATIC.value
                 splitPages = it == PageLayout.SPLIT_PAGES.value
-                if (!autoDoublePages) {
-                    doublePages = it == PageLayout.DOUBLE_PAGES.value
+                doublePages = when (it) {
+                    PageLayout.DOUBLE_PAGES.value -> true
+                    PageLayout.AUTOMATIC.value -> isLandscape()
+                    else -> false
                 }
             }, {
                 reloadChapterListener?.invoke(doublePages)
@@ -118,6 +127,15 @@ abstract class ViewerConfig(readerPreferences: ReaderPreferences, private val sc
 
         readerPreferences.hingeGapSize()
             .register({ hingeGapSize = it }, { imagePropertyChangedListener?.invoke() })
+    }
+
+    fun refreshAutomaticPageLayout() {
+        if (pageLayoutPreference != PageLayout.AUTOMATIC.value) return
+        val newDoublePages = isLandscape()
+        if (doublePages != newDoublePages) {
+            doublePages = newDoublePages
+            reloadChapterListener?.invoke(doublePages)
+        }
     }
 
     protected abstract fun defaultNavigation(): ViewerNavigation

@@ -113,7 +113,6 @@ private fun ColumnScope.PagerViewerSettings(screenModel: ReaderSettingsScreenMod
     val pageLayout by screenModel.preferences.pageLayout().collectAsState()
     SettingsChipRow(MR.strings.pref_page_layout) {
         PageLayout.entries
-            .filter { it != PageLayout.DOUBLE_PAGES }
             .map {
             FilterChip(
                 selected = pageLayout == it.value,
@@ -131,8 +130,10 @@ private fun ColumnScope.PagerViewerSettings(screenModel: ReaderSettingsScreenMod
             label = stringResource(MR.strings.pref_dual_page_shift),
             checked = manga?.readerOrientation?.toInt()?.let { (it and ReaderOrientation.SHIFT_DOUBLE_PAGE) != 0 } ?: false,
             onClick = {
-                val current = manga?.readerOrientation?.toInt() ?: 0
-                screenModel.onChangeOrientation(ReaderOrientation.fromPreference(current xor ReaderOrientation.SHIFT_DOUBLE_PAGE))
+                val current = manga?.readerOrientation?.toInt()?.let {
+                    (it and ReaderOrientation.SHIFT_DOUBLE_PAGE) != 0
+                } ?: false
+                screenModel.onChangeDoublePageShift(!current)
             },
         )
     }

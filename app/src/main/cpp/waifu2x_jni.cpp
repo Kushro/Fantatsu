@@ -213,6 +213,73 @@ Java_eu_kanade_tachiyomi_util_waifu2x_Waifu2x_nativeProcess(JNIEnv *env,
   return outBitmap;
 }
 
+extern "C" JNIEXPORT jobject JNICALL
+Java_eu_kanade_tachiyomi_util_waifu2x_Waifu2x_nativeScaleBitmap(
+    JNIEnv *env, jobject thiz, jobject bitmap, jint target_width,
+    jint target_height) {
+  if (!bitmap || target_width <= 0 || target_height <= 0) {
+    return bitmap;
+  }
+
+  AndroidBitmapInfo info;
+  if (AndroidBitmap_getInfo(env, bitmap, &info) < 0) {
+    return bitmap;
+  }
+  if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+    return bitmap;
+  }
+
+  void *pixels = nullptr;
+  if (AndroidBitmap_lockPixels(env, bitmap, &pixels) < 0) {
+    return bitmap;
+  }
+
+  ncnn::Mat in =
+      ncnn::Mat::from_pixels((const unsigned char *)pixels, ncnn::Mat::PIXEL_RGBA,
+                             info.width, info.height, info.stride);
+  AndroidBitmap_unlockPixels(env, bitmap);
+
+  if (in.empty()) {
+    return bitmap;
+  }
+
+  ncnn::Mat out;
+  ncnn::resize_bicubic(in, out, target_width, target_height);
+  if (out.empty()) {
+    return bitmap;
+  }
+
+  jclass bitmapClass = env->FindClass("android/graphics/Bitmap");
+  jmethodID createBitmapMethod = env->GetStaticMethodID(
+      bitmapClass, "createBitmap",
+      "(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;");
+
+  jclass configClass = env->FindClass("android/graphics/Bitmap$Config");
+  jfieldID configField = env->GetStaticFieldID(
+      configClass, "ARGB_8888", "Landroid/graphics/Bitmap$Config;");
+  jobject config = env->GetStaticObjectField(configClass, configField);
+
+  jobject outBitmap = env->CallStaticObjectMethod(bitmapClass, createBitmapMethod,
+                                                  target_width, target_height,
+                                                  config);
+  if (!outBitmap) {
+    return bitmap;
+  }
+
+  void *outPixels = nullptr;
+  if (AndroidBitmap_lockPixels(env, outBitmap, &outPixels) < 0) {
+    return bitmap;
+  }
+
+  AndroidBitmapInfo outInfo;
+  AndroidBitmap_getInfo(env, outBitmap, &outInfo);
+  out.to_pixels((unsigned char *)outPixels, ncnn::Mat::PIXEL_RGBA,
+                outInfo.stride);
+  AndroidBitmap_unlockPixels(env, outBitmap);
+
+  return outBitmap;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_eu_kanade_tachiyomi_util_waifu2x_Waifu2x_nativeDestroy(JNIEnv *env,
                                                             jobject thiz) {

@@ -24,6 +24,9 @@ import tachiyomi.core.common.util.system.logcat
 import logcat.LogPriority
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * A [Decoder] that uses built-in [ImageDecoder] to decode images that is not supported by the system.
@@ -113,8 +116,9 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                             val mangaId = options.mangaId
                             val chapterId = options.chapterId
                             val pageIndex = options.pageIndex
+                            val pageVariant = options.pageVariant
 
-                            logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex enhanced=true, manga=$mangaId, chapter=$chapterId" }
+                            logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant enhanced=true, manga=$mangaId, chapter=$chapterId" }
 
                             if (mangaId != -1L && chapterId != -1L && pageIndex != -1) {
                                 val context = Injekt.get<android.app.Application>()
@@ -127,15 +131,15 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                                     preferences.realCuganModel().get(),
                                     preferences.realCuganMaxSizeWidth().get(),
                                     preferences.realCuganMaxSizeHeight().get(),
-                                    preferences.realCuganResizeLargeImage().get()
+                                    true
                                 )
-                                logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex configHash=$configHash" }
+                                logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant configHash=$configHash" }
 
                                 // Check cache first
                                 var usedCache = false
-                                val cachedFile = ImageEnhancementCache.getCachedImage(mangaId, chapterId, pageIndex, configHash)
+                                val cachedFile = ImageEnhancementCache.getCachedImage(mangaId, chapterId, pageIndex, configHash, pageVariant)
                                 if (cachedFile != null) {
-                                    logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex found in cache: ${cachedFile.absolutePath}" }
+                                    logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant found in cache: ${cachedFile.absolutePath}" }
                                     try {
                                         val cachedBitmap = BitmapFactory.decodeFile(cachedFile.absolutePath)
                                         if (cachedBitmap != null) {
@@ -149,56 +153,33 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                                 }
 
                                 if (!usedCache) {
-                                    logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex NOT in cache or decode failed, processing..." }
+                                    logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant NOT in cache or decode failed, processing..." }
                                     // Not in cache or decode failed, perform enhancement on-the-fly
                                     try {
                                         val model = preferences.realCuganModel().get()
                                         val noise = preferences.realCuganNoiseLevel().get()
                                         var scale = preferences.realCuganScale().get()
 
-                                        // --- Smart Downscaling / Skip Check ---
+                                        // --- Target Resolution Check / Prescale ---
                                         val maxWidth = preferences.realCuganMaxSizeWidth().get()
                                         val maxHeight = preferences.realCuganMaxSizeHeight().get()
-                                        val shouldResize = preferences.realCuganResizeLargeImage().get()
+                                        val shouldResize = true
                                         var shouldSkipEnhancement = false
 
                                         val targetWidth = if (maxWidth > 0) maxWidth else Int.MAX_VALUE
                                         val targetHeight = if (maxHeight > 0) maxHeight else Int.MAX_VALUE
-                                        val exceedsLimit = (maxWidth > 0 || maxHeight > 0) && 
-                                                           (bitmap.width > targetWidth || bitmap.height > targetHeight)
+                                        val hasTargetResolution = maxWidth > 0 || maxHeight > 0
+                                        val exceedsLimit = hasTargetResolution &&
+                                            (bitmap.width > targetWidth || bitmap.height > targetHeight)
 
                                         if (exceedsLimit) {
-                                            if (shouldResize) {
-                                                // User allows auto-resize: downscale the image
-                                                val widthRatio = targetWidth.toFloat() / bitmap.width
-                                                val heightRatio = targetHeight.toFloat() / bitmap.height
-                                                val ratio = Math.min(widthRatio, heightRatio)
-                                                
-                                                val newWidth = (bitmap.width * ratio).toInt().coerceAtLeast(1)
-                                                val newHeight = (bitmap.height * ratio).toInt().coerceAtLeast(1)
-
-                                                logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Smart Downscaling page $pageIndex: ${bitmap.width}x${bitmap.height} -> ${newWidth}x${newHeight} (Input Limit: ${maxWidth}x${maxHeight})" }
-                                                val scaledBitmap = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
-                                                if (scaledBitmap != bitmap) {
-                                                    bitmap.recycle()
-                                                    bitmap = scaledBitmap
-                                                }
-                                            } else {
-                                                // User does NOT allow auto-resize: skip enhancement entirely
-                                                logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Skipping enhancement for page $pageIndex - exceeds limit (${bitmap.width}x${bitmap.height} > ${maxWidth}x${maxHeight}) and auto-resize is disabled" }
-                                                
-                                                // Save skip marker to cache so UI can show RAW status
-                                                ImageEnhancementCache.saveSkippedToCache(mangaId, chapterId, pageIndex!!, configHash)
-                                                
-                                                shouldSkipEnhancement = true
+                                            logcat(LogPriority.DEBUG) {
+                                                "TachiyomiImageDecoder: Skipping enhancement for page $pageIndex - source ${bitmap.width}x${bitmap.height} exceeds target ${maxWidth}x${maxHeight}"
                                             }
+                                            ImageEnhancementCache.saveSkippedToCache(mangaId, chapterId, pageIndex!!, configHash, pageVariant)
+                                            shouldSkipEnhancement = true
                                         }
-                                        // --- End Smart Downscaling / Skip Check ---
-                                        
-                                        if (shouldSkipEnhancement) {
-                                            // Don't process, just use the original bitmap
-                                        } else {
-                                        
+
                                         // --- Performance Mode ---
                                         val perfMode = preferences.realCuganPerformanceMode().get()
                                         val tileSleepMs = when (perfMode) {
@@ -220,6 +201,33 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                                         if (effectiveScale != scale) {
                                             logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Model $model only supports ${effectiveScale}x, clamping from ${scale}x" }
                                         }
+
+                                        if (!shouldSkipEnhancement && shouldResize && hasTargetResolution) {
+                                            val finalWidthAtScale = bitmap.width * effectiveScale.toFloat()
+                                            val finalHeightAtScale = bitmap.height * effectiveScale.toFloat()
+                                            val ratio = min(
+                                                targetWidth / finalWidthAtScale,
+                                                targetHeight / finalHeightAtScale,
+                                            )
+
+                                            if (ratio in 0f..<1f) {
+                                                val newWidth = max(1, (bitmap.width * ratio).roundToInt())
+                                                val newHeight = max(1, (bitmap.height * ratio).roundToInt())
+                                                logcat(LogPriority.DEBUG) {
+                                                    "TachiyomiImageDecoder: Prescaling page $pageIndex with native scaling ${bitmap.width}x${bitmap.height} -> ${newWidth}x${newHeight}, target=${maxWidth}x${maxHeight}, scale=${effectiveScale}x"
+                                                }
+                                                val scaledBitmap = nativeScaleBitmap(bitmap, newWidth, newHeight)
+                                                if (scaledBitmap != bitmap) {
+                                                    bitmap.recycle()
+                                                    bitmap = scaledBitmap
+                                                }
+                                            }
+                                        }
+                                        // --- End Target Resolution Check / Prescale ---
+                                        
+                                        if (shouldSkipEnhancement) {
+                                            // Don't process, just use the original bitmap
+                                        } else {
 
                                         val initialized = when (model) {
                                             0 -> Waifu2x.initRealCugan(context, noise, effectiveScale, isPro = false, tileSleepMs = tileSleepMs, tileSize = tileSize)
@@ -256,7 +264,7 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                                                     val newHeight = (result.height * ratio).toInt().coerceAtLeast(1)
                                                     
                                                     logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Output downscale page $pageIndex: ${result.width}x${result.height} -> ${newWidth}x${newHeight} (Texture Limit: $textureLimit)" }
-                                                    val downscaled = Bitmap.createScaledBitmap(result, newWidth, newHeight, true)
+                                                    val downscaled = nativeScaleBitmap(result, newWidth, newHeight)
                                                     if (downscaled != result) {
                                                         result.recycle()
                                                         result = downscaled
@@ -264,11 +272,11 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                                                 }
                                                 // --- End Output Resolution Limit ---
                                                 
-                                                val savedFile = ImageEnhancementCache.saveToCache(mangaId, chapterId, pageIndex, configHash, result)
+                                                val savedFile = ImageEnhancementCache.saveToCache(mangaId, chapterId, pageIndex, configHash, result, pageVariant)
                                                 if (savedFile != null) {
-                                                    logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex saved to cache: ${savedFile.absolutePath}" }
+                                                    logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant saved to cache: ${savedFile.absolutePath}" }
                                                 } else {
-                                                    logcat(LogPriority.ERROR) { "TachiyomiImageDecoder: Page $pageIndex FAILED to save to cache" }
+                                                    logcat(LogPriority.ERROR) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant FAILED to save to cache" }
                                                 }
                                                 if (bitmap != result) bitmap.recycle()
                                                 bitmap = result
@@ -333,4 +341,22 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
         var displayProfile: ByteArray? = null
         private val decodeSemaphore = Semaphore(1)
     }
+}
+
+private fun nativeScaleBitmap(
+    source: Bitmap,
+    targetWidth: Int,
+    targetHeight: Int,
+): Bitmap {
+    if (source.width == targetWidth && source.height == targetHeight) return source
+    return Waifu2x.scaleBitmapNative(
+        source,
+        max(1, targetWidth),
+        max(1, targetHeight),
+    ) ?: Bitmap.createScaledBitmap(
+        source,
+        max(1, targetWidth),
+        max(1, targetHeight),
+        true,
+    )
 }

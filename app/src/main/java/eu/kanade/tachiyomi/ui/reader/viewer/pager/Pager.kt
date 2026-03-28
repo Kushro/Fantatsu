@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
 import android.content.Context
+import android.os.Parcelable
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -16,6 +17,13 @@ open class Pager(
     context: Context,
     isHorizontal: Boolean = true,
 ) : DirectionalViewPager(context, isHorizontal) {
+
+    init {
+        // Pager position is restored from ReaderPage index by the viewer. Letting ViewPager also
+        // restore its raw currentItem causes rotation to reapply stale spread positions.
+        isSaveEnabled = false
+        isSaveFromParentEnabled = false
+    }
 
     /**
      * Tap listener function to execute when a tap is detected.
@@ -107,5 +115,13 @@ open class Pager(
      */
     fun setGestureDetectorEnabled(enabled: Boolean) {
         isGestureDetectorEnabled = enabled
+    }
+
+    override fun onSaveInstanceState(): Parcelable? {
+        return null
+    }
+
+    override fun onRestoreInstanceState(state: Parcelable?) {
+        super.onRestoreInstanceState(null)
     }
 }

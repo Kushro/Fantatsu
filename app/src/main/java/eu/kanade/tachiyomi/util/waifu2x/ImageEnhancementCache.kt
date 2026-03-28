@@ -37,26 +37,52 @@ object ImageEnhancementCache {
     /**
      * Get cached file if it exists
      */
-    fun getCachedImage(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String): File? {
-        val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash))
+    fun getCachedImage(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): File? {
+        val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant))
         return if (file.exists()) file else null
     }
     
     /**
      * Check if a file is already cached (helper for UI checks)
      */
-    fun isCached(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String): Boolean {
-        return getCachedImage(mangaId, chapterId, pageIndex, configHash) != null
+    fun isCached(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
+        return getCachedImage(mangaId, chapterId, pageIndex, configHash, pageVariant) != null
+    }
+
+    /**
+     * Remove a cached enhanced image and its temporary file for the same page/config.
+     */
+    fun removeCachedImage(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
+        return try {
+            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant))
+            val tempFile = File(file.parent, "${file.name}.tmp")
+            val removedFile = !file.exists() || file.delete()
+            val removedTemp = !tempFile.exists() || tempFile.delete()
+            removedFile && removedTemp
+        } catch (e: Exception) {
+            android.util.Log.e("ImageEnhancementCache", "Failed to remove cached image for page $pageIndex", e)
+            false
+        }
+    }
+
+    fun removeSkipMarker(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
+        return try {
+            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant) + ".skip")
+            !file.exists() || file.delete()
+        } catch (e: Exception) {
+            android.util.Log.e("ImageEnhancementCache", "Failed to remove skip marker for page $pageIndex", e)
+            false
+        }
     }
 
     /**
      * Save bitmap to disk cache
      */
-    fun saveToCache(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, bitmap: Bitmap): File? {
+    fun saveToCache(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, bitmap: Bitmap, pageVariant: String = ""): File? {
         val currentCacheDir = cacheDir ?: return null
         
         try {
-            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash))
+            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant))
             val tempFile = File(file.parent, "${file.name}.tmp")
             
             FileOutputStream(tempFile).use { out ->
@@ -84,9 +110,9 @@ object ImageEnhancementCache {
     /**
      * Mark a page as skipped (too large to process) in the cache
      */
-    fun saveSkippedToCache(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String) {
+    fun saveSkippedToCache(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = "") {
         try {
-            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash) + ".skip")
+            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant) + ".skip")
             if (!file.exists()) {
                 file.createNewFile()
             }
@@ -98,8 +124,8 @@ object ImageEnhancementCache {
     /**
      * Check if a page was marked as skipped in the cache
      */
-    fun isSkipped(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String): Boolean {
-        return File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash) + ".skip").exists()
+    fun isSkipped(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
+        return File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant) + ".skip").exists()
     }
 
     /**
@@ -135,8 +161,17 @@ object ImageEnhancementCache {
         cacheDir?.mkdirs()
     }
 
-    private fun getFilename(pageIndex: Int, configHash: String): String {
-        return "${pageIndex}_${configHash}.webp"
+    private fun getFilename(pageIndex: Int, configHash: String, pageVariant: String = ""): String {
+        return buildString {
+            append(pageIndex)
+            append('_')
+            append(configHash)
+            if (pageVariant.isNotEmpty()) {
+                append('_')
+                append(pageVariant)
+            }
+            append(".webp")
+        }
     }
 
     /**

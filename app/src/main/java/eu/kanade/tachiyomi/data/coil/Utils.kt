@@ -78,3 +78,12 @@ val Options.pageIndex: Int
     get() = getExtra(pageIndexKey)
 
 private val pageIndexKey = Extras.Key(default = -1)
+
+fun ImageRequest.Builder.pageVariant(variant: String) = apply {
+    extras[pageVariantKey] = variant
+}
+
+val Options.pageVariant: String
+    get() = getExtra(pageVariantKey)
+
+private val pageVariantKey = Extras.Key(default = "")

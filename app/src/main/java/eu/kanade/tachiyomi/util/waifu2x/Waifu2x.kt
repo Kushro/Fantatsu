@@ -461,6 +461,29 @@ object Waifu2x {
         nativeSetUiBusy(busy)
     }
 
+    fun scaleBitmapNative(input: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap? {
+        if (input.isRecycled) return null
+        if (input.width == targetWidth && input.height == targetHeight) return input
+
+        val argbBitmap = if (input.config != Bitmap.Config.ARGB_8888) {
+            try {
+                input.copy(Bitmap.Config.ARGB_8888, false)
+            } catch (e: Exception) {
+                null
+            }
+        } else {
+            input
+        } ?: return null
+
+        return try {
+            nativeScaleBitmap(argbBitmap, targetWidth, targetHeight)
+        } finally {
+            if (argbBitmap !== input) {
+                argbBitmap.recycle()
+            }
+        }
+    }
+
     // Native methods
     private external fun nativeInit(modelDir: String, noiseLevel: Int, scale: Int): Boolean
     private external fun nativeInitWaifu2xUpconv7(modelDir: String, noiseLevel: Int, scale: Int): Boolean
@@ -485,5 +508,6 @@ object Waifu2x {
     private external fun nativeInitRealESRGAN(modelDir: String, scale: Int): Boolean
     private external fun nativeInitNose(modelDir: String): Boolean
     private external fun nativeProcessRealCugan(input: Bitmap, id: Int): Bitmap?
+    private external fun nativeScaleBitmap(input: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap?
     private external fun nativeGetProgress(): Long
 }

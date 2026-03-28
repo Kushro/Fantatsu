@@ -434,6 +434,16 @@ class ReaderViewModel @JvmOverloads constructor(
         }
     }
 
+    fun saveCurrentPageForRestore(page: ReaderPage) {
+        logcat {
+            "ReaderViewModel.saveCurrentPageForRestore: page=${page.number}, index=${page.index}, " +
+                "chapter=${page.chapter.chapter.id}"
+        }
+        page.chapter.requestedPage = page.index
+        chapterPageIndex = page.index
+        chapterId = page.chapter.chapter.id ?: chapterId
+    }
+
     /**
      * Called every time a page changes on the reader. Used to mark the flag of chapters being
      * read, update tracking services, enqueue downloaded chapter deletion, and updating the active chapter if this
@@ -444,9 +454,20 @@ class ReaderViewModel @JvmOverloads constructor(
      * read, update tracking services, enqueue downloaded chapter deletion, and updating the active chapter if this
      * [page]'s chapter is different from the currently active.
      */
-    fun onPageSelected(page: ReaderPage, hasExtraPage: Boolean = false) {
-        mutableState.update { it.copy(hasExtraPage = hasExtraPage) }
-        // InsertPage doesn't change page progress
+    fun onPageSelected(
+        page: ReaderPage,
+        hasExtraPage: Boolean = false,
+        displayCurrentPage: Int = page.number,
+        displayTotalPages: Int? = null,
+    ) {
+        mutableState.update {
+            it.copy(
+                hasExtraPage = hasExtraPage,
+                currentPage = displayCurrentPage,
+                displayTotalPages = displayTotalPages,
+            )
+        }
+        // InsertPage doesn't change saved chapter progress
         if (page is InsertPage) {
             return
         }
@@ -456,7 +477,7 @@ class ReaderViewModel @JvmOverloads constructor(
 
         // Save last page read and mark as read if needed
         viewModelScope.launchNonCancellable {
-            updateChapterProgress(selectedChapter, page)
+            updateChapterProgress(selectedChapter, page, displayCurrentPage, displayTotalPages ?: pages.size)
         }
 
         if (selectedChapter != getCurrentChapter()) {
@@ -540,11 +561,19 @@ class ReaderViewModel @JvmOverloads constructor(
      * Saves the chapter progress (last read page and whether it's read)
      * if incognito mode isn't on.
      */
-    private suspend fun updateChapterProgress(readerChapter: ReaderChapter, page: Page) {
+    private suspend fun updateChapterProgress(
+        readerChapter: ReaderChapter,
+        page: Page,
+        displayCurrentPage: Int,
+        displayTotalPages: Int,
+    ) {
         val pageIndex = page.index
 
         mutableState.update {
-            it.copy(currentPage = pageIndex + 1)
+            it.copy(
+                currentPage = displayCurrentPage,
+                displayTotalPages = displayTotalPages,
+            )
         }
         readerChapter.requestedPage = pageIndex
         chapterPageIndex = pageIndex
@@ -766,6 +795,10 @@ class ReaderViewModel @JvmOverloads constructor(
         }
     }
 
+    fun toggleImageEnhancement(): Boolean {
+        return readerPreferences.realCuganEnabled().toggle()
+    }
+
     /**
      * Generate a filename for the given [manga] and [page]
      */
@@ -795,6 +828,10 @@ class ReaderViewModel @JvmOverloads constructor(
 
     fun openOrientationModeSelectDialog() {
         mutableState.update { it.copy(dialog = Dialog.OrientationModeSelect) }
+    }
+
+    fun openPageLayoutSelectDialog() {
+        mutableState.update { it.copy(dialog = Dialog.PageLayoutSelect) }
     }
 
     fun openPageDialog(page: ReaderPage) {
@@ -982,18 +1019,20 @@ class ReaderViewModel @JvmOverloads constructor(
         val dialog: Dialog? = null,
         val menuVisible: Boolean = false,
         @IntRange(from = -100, to = 100) val brightnessOverlayValue: Int = 0,
+        val displayTotalPages: Int? = null,
     ) {
         val currentChapter: ReaderChapter?
             get() = viewerChapters?.currChapter
 
         val totalPages: Int
-            get() = currentChapter?.pages?.size ?: -1
+            get() = displayTotalPages ?: currentChapter?.pages?.size ?: -1
     }
 
     sealed interface Dialog {
         data object Loading : Dialog
         data object Settings : Dialog
         data object ReadingModeSelect : Dialog
+        data object PageLayoutSelect : Dialog
         data object OrientationModeSelect : Dialog
         data class PageActions(val page: ReaderPage) : Dialog
     }

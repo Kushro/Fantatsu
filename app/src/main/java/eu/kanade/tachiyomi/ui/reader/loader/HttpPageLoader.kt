@@ -207,9 +207,15 @@ internal class HttpPageLoader(
                         preferences.realCuganModel().get(),
                         preferences.realCuganMaxSizeWidth().get(),
                         preferences.realCuganMaxSizeHeight().get(),
-                        preferences.realCuganResizeLargeImage().get()
+                        true
                     )
-                    val cachedFile = ImageEnhancementCache.getCachedImage(mangaId, chapterId, page.index, configHash)
+                    val cachedFile = ImageEnhancementCache.getCachedImage(
+                        mangaId,
+                        chapterId,
+                        page.index,
+                        configHash,
+                        page.enhancementKeySuffix,
+                    )
                     if (cachedFile != null) {
                         // Use enhanced stream
                         streamSource = { cachedFile.inputStream() }

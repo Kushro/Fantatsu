@@ -59,10 +59,13 @@ fun ReaderAppBars(
 
     readingMode: ReadingMode,
     onClickReadingMode: () -> Unit,
+    onClickPageLayout: () -> Unit,
     orientation: ReaderOrientation,
     onClickOrientation: () -> Unit,
     cropEnabled: Boolean,
     onClickCropBorder: () -> Unit,
+    imageEnhancementEnabled: Boolean,
+    onClickImageEnhancement: () -> Unit,
     onClickSettings: () -> Unit,
 ) {
     val isRtl = viewer is R2LPagerViewer
@@ -121,10 +124,13 @@ fun ReaderAppBars(
                         .windowInsetsPadding(WindowInsets.navigationBars),
                     readingMode = readingMode,
                     onClickReadingMode = onClickReadingMode,
+                    onClickPageLayout = onClickPageLayout,
                     orientation = orientation,
                     onClickOrientation = onClickOrientation,
                     cropEnabled = cropEnabled,
                     onClickCropBorder = onClickCropBorder,
+                    imageEnhancementEnabled = imageEnhancementEnabled,
+                    onClickImageEnhancement = onClickImageEnhancement,
                     onClickSettings = onClickSettings,
                 )
             }

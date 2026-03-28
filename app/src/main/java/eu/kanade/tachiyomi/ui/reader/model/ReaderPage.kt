@@ -20,6 +20,9 @@ open class ReaderPage(
     var endPageConfidence: Int? = null
     var startPageConfidence: Int? = null
 
+    var enhancementStream: (() -> InputStream)? = null
+    var enhancementKeySuffix: String = ""
+
     fun isFromSamePage(other: ReaderPage): Boolean {
         return index == other.index && chapter.chapter.id == other.chapter.chapter.id
     }

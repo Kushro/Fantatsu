@@ -33,6 +33,9 @@ class PagerViewerAdapter(private val viewer: PagerViewer) : ViewPagerAdapter() {
 
     var currentChapter: ReaderChapter? = null
 
+    var restoredPosition = false
+        private set
+
     /**
      * Context that has been wrapped to use the correct theme values based on the
      * current app theme and reader background color
@@ -49,12 +52,16 @@ class PagerViewerAdapter(private val viewer: PagerViewer) : ViewPagerAdapter() {
 
     var forceTransition = false
 
+    private val displayReaderPages: List<ReaderPage>
+        get() = subItems.filterIsInstance<ReaderPage>().filterNot { it is InsertPage }
+
     /**
      * Updates this adapter with the given [chapters]. It handles setting a few pages of the
      * next/previous chapter to allow seamless transitions and inverting the pages if the viewer
      * has R2L direction.
      */
-    fun setChapters(chapters: ViewerChapters, forceTransition: Boolean) {
+    fun setChapters(chapters: ViewerChapters, forceTransition: Boolean, anchorPage: ReaderPage? = null) {
+        restoredPosition = false
         val newItems = mutableListOf<ReaderItem>()
 
         // Forces chapter transition if there is missing chapters
@@ -118,6 +125,7 @@ class PagerViewerAdapter(private val viewer: PagerViewer) : ViewPagerAdapter() {
         preprocessed = mutableMapOf()
         
         var useSecondPage = false
+        val enteringDoublePages = !doubledUp && viewer.config.doublePages
         if (shifted != viewer.config.shiftDoublePage || (doubledUp != viewer.config.doublePages && doubledUp)) {
             if (shifted && (doubledUp == viewer.config.doublePages)) {
                 useSecondPage = true
@@ -125,10 +133,18 @@ class PagerViewerAdapter(private val viewer: PagerViewer) : ViewPagerAdapter() {
             shifted = viewer.config.shiftDoublePage
         }
         doubledUp = viewer.config.doublePages
-        setJoinedItems(useSecondPage)
+        restoredPosition = setJoinedItems(
+            useSecondPage = useSecondPage,
+            preferCurrentAsFirstPage = enteringDoublePages,
+            anchorPage = anchorPage,
+        )
     }
 
-    private fun setJoinedItems(useSecondPage: Boolean = false) {
+    private fun setJoinedItems(
+        useSecondPage: Boolean = false,
+        preferCurrentAsFirstPage: Boolean = false,
+        anchorPage: ReaderPage? = null,
+    ): Boolean {
         val oldCurrent = joinedItems.getOrNull(viewer.pager.currentItem)
         if (!viewer.config.doublePages) {
             // If not in double mode, set up items like before
@@ -264,43 +280,103 @@ class PagerViewerAdapter(private val viewer: PagerViewer) : ViewPagerAdapter() {
         }
         notifyDataSetChanged()
 
-        // Step 6: Move back to our previous page or transition page
-        val newPage =
-            when {
-                (oldCurrent?.first as? ReaderPage)?.chapter != currentChapter &&
-                    (oldCurrent?.first as? ChapterTransition)?.from != currentChapter -> subItems.find { (it as? ReaderPage)?.chapter == currentChapter }
-                useSecondPage && oldCurrent?.second is ReaderPage -> (oldCurrent.second ?: oldCurrent.first)
-                else -> oldCurrent?.first ?: return
+        val requestedPage = currentChapter?.pages
+            ?.getOrNull(currentChapter?.requestedPage ?: -1)
+            ?.let(::findReaderPage)
+
+        val desiredPage = findReaderPage(anchorPage)
+            ?: requestedPage
+            ?: resolveFallbackPage(oldCurrent, useSecondPage)
+
+        val desiredPosition = when {
+            desiredPage != null -> getPositionForPage(desiredPage, preferCurrentAsFirstPage)
+            oldCurrent?.first is ChapterTransition -> getPositionForTransition(oldCurrent.first as ChapterTransition)
+            else -> -1
+        }
+
+        logcat {
+            "PagerViewerAdapter.setJoinedItems: doublePages=${viewer.config.doublePages}, " +
+                "requested=${requestedPage?.number}/${requestedPage?.index}, " +
+                "anchor=${anchorPage?.number}/${anchorPage?.index}, " +
+                "desired=${desiredPage?.number}/${desiredPage?.index}, " +
+                "desiredPosition=$desiredPosition, currentItem=${viewer.pager.currentItem}"
+        }
+
+        if (desiredPosition > -1) {
+            viewer.setPendingSelectedPage(desiredPage)
+            viewer.pager.setCurrentItem(desiredPosition, false)
+            return true
+        }
+
+        return false
+    }
+
+    private fun resolveFallbackPage(
+        oldCurrent: Pair<ReaderItem, ReaderItem?>?,
+        useSecondPage: Boolean,
+    ): ReaderPage? {
+        val oldPages = listOfNotNull(oldCurrent?.first as? ReaderPage, oldCurrent?.second as? ReaderPage)
+        val preferredPage = when {
+            useSecondPage -> oldPages.lastOrNull()
+            else -> oldPages.maxByOrNull { it.index }
+        }
+        return findReaderPage(preferredPage)
+    }
+
+    private fun findReaderPage(page: ReaderPage?): ReaderPage? {
+        page ?: return null
+        return displayReaderPages.firstOrNull { candidate -> candidate.isFromSamePage(page) }
+    }
+
+    fun getPositionForPage(page: ReaderPage, preferCurrentAsFirstPage: Boolean = false): Int {
+        var index = if (preferCurrentAsFirstPage) {
+            joinedItems.indexOfFirst {
+                val firstPage = it.first as? ReaderPage
+                firstPage !is InsertPage && firstPage?.isFromSamePage(page) == true
             }
-        var index = joinedItems.indexOfFirst {
-            val readerPage = it.first as? ReaderPage
-            val readerPage2 = it.second as? ReaderPage
-            val newReaderPage = newPage as? ReaderPage
-            it.first == newPage || it.second == newPage ||
-                (
-                    readerPage != null && newReaderPage != null &&
-                        (
-                            readerPage.isFromSamePage(newReaderPage) ||
-                                readerPage2?.isFromSamePage(newReaderPage) == true
-                            ) &&
-                        (readerPage.firstHalf == !useSecondPage || readerPage.firstHalf == null)
-                    )
+        } else {
+            -1
         }
-        if (newPage is ChapterTransition && index == -1 && !forceTransition) {
-            val newerPage = if (newPage is ChapterTransition.Next) {
-                joinedItems.filter {
-                    (it.first as? ReaderPage)?.chapter == newPage.to
-                }.minByOrNull { (it.first as? ReaderPage)?.index ?: Int.MAX_VALUE }?.first
-            } else {
-                joinedItems.filter {
-                    (it.first as? ReaderPage)?.chapter == newPage.to
-                }.maxByOrNull { (it.first as? ReaderPage)?.index ?: Int.MIN_VALUE }?.first
+
+        if (index == -1) {
+            index = joinedItems.indexOfFirst { pair ->
+                visibleReaderPages(pair).any { it.isFromSamePage(page) }
             }
-            index = joinedItems.indexOfFirst { it.first == newerPage || it.second == newerPage }
         }
-        if (index > -1) {
-            viewer.pager.setCurrentItem(index, false)
+
+        return index
+    }
+
+    private fun getPositionForTransition(transition: ChapterTransition): Int {
+        var index = joinedItems.indexOfFirst { it.first == transition }
+        if (index != -1 || forceTransition) {
+            return index
         }
+
+        val fallbackPage = if (transition is ChapterTransition.Next) {
+            joinedItems.asSequence()
+                .flatMap { visibleReaderPages(it).asSequence() }
+                .filter { it.chapter == transition.to }
+                .minByOrNull { it.index }
+        } else {
+            joinedItems.asSequence()
+                .flatMap { visibleReaderPages(it).asSequence() }
+                .filter { it.chapter == transition.to }
+                .maxByOrNull { it.index }
+        }
+
+        return fallbackPage?.let(::getPositionForPage) ?: -1
+    }
+
+    private fun visibleReaderPages(item: Pair<ReaderItem, ReaderItem?>): List<ReaderPage> {
+        return listOfNotNull(item.first as? ReaderPage, item.second as? ReaderPage)
+            .filterNot { it is InsertPage }
+    }
+
+    fun getActiveReaderPage(position: Int): ReaderPage? {
+        return joinedItems.getOrNull(position)
+            ?.let(::visibleReaderPages)
+            ?.firstOrNull()
     }
 
     /**
@@ -330,8 +406,6 @@ class PagerViewerAdapter(private val viewer: PagerViewer) : ViewPagerAdapter() {
             val position = joinedItems.indexOfFirst { it.first == view.item || (it.first to it.second) == view.item }
             if (position != -1) {
                 return position
-            } else {
-                logcat { "Position for ${view.item} not found" }
             }
         }
         return POSITION_NONE
@@ -367,13 +441,39 @@ class PagerViewerAdapter(private val viewer: PagerViewer) : ViewPagerAdapter() {
         }
 
         subItems.add(placeAtIndex, newPage)
-        setJoinedItems()
+        restoredPosition = setJoinedItems(anchorPage = viewer.getCurrentReaderPage())
+    }
+
+    fun onWidePageDetected(page: ReaderPage) {
+        if (page.fullPage == true) return
+        page.fullPage = true
+        restoredPosition = setJoinedItems(anchorPage = viewer.getCurrentReaderPage() ?: page)
     }
 
     fun cleanupPageSplit() {
         val insertPages = subItems.filterIsInstance(InsertPage::class.java)
         subItems.removeAll(insertPages)
-        setJoinedItems()
+        subItems.filterIsInstance<ReaderPage>().forEach {
+            it.fullPage = null
+            it.isolatedPage = false
+            it.shiftedPage = false
+            it.firstHalf = null
+        }
+        restoredPosition = setJoinedItems(anchorPage = viewer.getCurrentReaderPage())
+    }
+
+    fun getDisplayPage(index: Int): ReaderPage? {
+        return displayReaderPages.getOrNull(index)
+    }
+
+    fun getDisplayPageCount(): Int {
+        return displayReaderPages.size
+    }
+
+    fun getDisplayPageNumber(page: ReaderPage): Int {
+        return displayReaderPages.indexOfFirst { item ->
+            item === page || item.isFromSamePage(page)
+        }.let { if (it >= 0) it + 1 else page.number }
     }
 
     fun refresh() {

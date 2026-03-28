@@ -105,7 +105,7 @@ class ReaderPreferences(
 
     fun realCuganMaxSizeHeight() = preferenceStore.getInt("pref_realcugan_max_size_height", 1600)
     
-    fun realCuganResizeLargeImage() = preferenceStore.getBoolean("pref_realcugan_resize_large_image", false)
+    fun realCuganResizeLargeImage() = preferenceStore.getBoolean("pref_realcugan_resize_large_image", true)
 
     fun realCuganShowStatus() = preferenceStore.getBoolean("pref_realcugan_show_status", false)
 

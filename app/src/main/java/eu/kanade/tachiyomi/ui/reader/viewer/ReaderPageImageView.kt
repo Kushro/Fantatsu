@@ -73,8 +73,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import tachiyomi.core.common.util.lang.launchUI
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.collect
+import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.i18n.MR
 
 /**
  * A wrapper view for showing page image.
@@ -92,6 +97,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private val isWebtoon: Boolean = false,
 ) : FrameLayout(context, attrs, defStyleAttrs, defStyleRes) {
 
+    private val viewScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private var isSettingProcessedImage = false // Flag to prevent recursive processing
     private val alwaysDecodeLongStripWithSSIV by lazy {
@@ -124,7 +130,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
         get() = preferences.realCuganMaxSizeHeight().get()
         
     private val realCuganResizeLargeImage: Boolean
-        get() = preferences.realCuganResizeLargeImage().get()
+        get() = true
 
     private val realCuganShowStatus: Boolean
         get() = preferences.realCuganShowStatus().get()
@@ -151,7 +157,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
     private var pageView: View? = null
     private var currentLoadedUri: String? = null
+    private var lastStatusText: String? = null
 
+    var enhancedImageSourceFactory: ((java.io.File) -> BufferedSource?)? = null
+    var suppressDefaultStatus = false
 
     private var config: Config? = null
     
@@ -168,6 +177,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
     var mangaId: Long = -1L
     var chapterId: Long = -1L
     var readerPage: ReaderPage? = null
+    var enhancementVariantOverride: String? = null
+    var enhancementStreamOverride: (() -> java.io.InputStream)? = null
 
     private val statusView: TextView by lazy {
         TextView(context).apply {
@@ -197,7 +208,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     init {
         // Listen for performance mode changes to update native throttling immediately
         // Use launchIO to avoid blocking UI thread waiting for native lock if processing is active
-        launchIO {
+        viewScope.launchIO {
             // Check cache size and trim if needed (debounced to run at most once every 10 mins)
             eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.checkAndTrim(context)
 
@@ -219,10 +230,30 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     eu.kanade.tachiyomi.util.waifu2x.Waifu2x.updatePerformance(sleepMs, size)
                 }
         }
+
+        viewScope.launchIO {
+            preferences.realCuganShowStatus().changes()
+                .collect { enabled ->
+                    withUIContext {
+                        if (!enabled) {
+                            statusView.isVisible = false
+                        } else if (lastStatusText != null) {
+                            statusView.text = lastStatusText
+                            statusView.isVisible = true
+                            statusView.bringToFront()
+                        }
+                    }
+                }
+        }
     }
 
     private fun updateStatus(text: String?) {
+        lastStatusText = text
         post {
+            if (suppressDefaultStatus) {
+                statusView.isVisible = false
+                return@post
+            }
             if (!realCuganShowStatus || text == null) {
                 statusView.isVisible = false
                 return@post
@@ -243,20 +274,17 @@ open class ReaderPageImageView @JvmOverloads constructor(
         onImageLoaded?.invoke()
         background = pageBackground
         
-        // Synchronized Fade-out: Only hide overlay after the new image is actually rendered
+        // Keep the processed preview fully covering the page until the replacement image is ready,
+        // then switch instantly to avoid exposing SSIV's blank loading state.
         if (isSettingProcessedImage) {
             pageView?.alpha = 1f
-            enhancedOverlay.animate()
-                .alpha(0f)
-                .setDuration(200)
-                .withEndAction {
-                    enhancedOverlay.isVisible = false
-                    enhancedOverlay.setImageBitmap(null)
-                    enhancedBitmap?.recycle()
-                    enhancedBitmap = null
-                    isSettingProcessedImage = false
-                }
-                .start()
+            enhancedOverlay.animate().cancel()
+            enhancedOverlay.alpha = 0f
+            enhancedOverlay.isVisible = false
+            enhancedOverlay.setImageBitmap(null)
+            enhancedBitmap?.recycle()
+            enhancedBitmap = null
+            isSettingProcessedImage = false
         }
 
 
@@ -268,6 +296,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
         
         // Hide overlay and recycle temporary bitmap if enhanced image load failed
         if (isSettingProcessedImage) {
+            pageView?.alpha = 1f
             enhancedOverlay.setImageBitmap(null)
             enhancedOverlay.isVisible = false
             enhancedBitmap?.recycle()
@@ -292,6 +321,176 @@ open class ReaderPageImageView @JvmOverloads constructor(
         }
     }
 
+    private fun decodeEnhancedBitmap(file: java.io.File): Bitmap? {
+        return try {
+            android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun setProcessedSource(
+        file: java.io.File,
+        bitmap: Bitmap? = null,
+        transformedSource: BufferedSource? = null,
+    ) {
+        val uriString = file.toURI().toString()
+        updateStatus(context.stringResource(MR.strings.reader_status_processed))
+
+        if (transformedSource != null) {
+            val previewBitmap = try {
+                android.graphics.BitmapFactory.decodeStream(transformedSource.peek().inputStream())
+            } catch (_: Exception) {
+                null
+            }
+
+            if (previewBitmap != null) {
+                enhancedOverlay.bringToFront()
+                enhancedOverlay.setImageBitmap(previewBitmap)
+                enhancedOverlay.alpha = 1f
+                enhancedOverlay.isVisible = true
+                statusView.bringToFront()
+                enhancedBitmap = previewBitmap
+                isSettingProcessedImage = true
+                pageView?.alpha = 0f
+            } else {
+                pageView?.alpha = 1f
+                enhancedOverlay.animate().cancel()
+                enhancedOverlay.setImageBitmap(null)
+                enhancedOverlay.isVisible = false
+                enhancedBitmap?.recycle()
+                enhancedBitmap = null
+                isSettingProcessedImage = false
+            }
+
+            (pageView as? SubsamplingScaleImageView)?.setImage(ImageSource.inputStream(transformedSource.inputStream()))
+            currentLoadedUri = uriString
+            isVisible = true
+            return
+        }
+
+        if (bitmap != null) {
+            enhancedOverlay.bringToFront()
+            enhancedOverlay.setImageBitmap(bitmap)
+            enhancedOverlay.alpha = 1f
+            enhancedOverlay.isVisible = true
+            statusView.bringToFront()
+            enhancedBitmap = bitmap
+            isSettingProcessedImage = true
+            pageView?.alpha = 0f
+        }
+
+        val uri = android.net.Uri.fromFile(file)
+        (pageView as? SubsamplingScaleImageView)?.setImage(ImageSource.uri(context, uri))
+        currentLoadedUri = uriString
+        isVisible = true
+    }
+
+    private fun enhancementVariant(): String {
+        return enhancementVariantOverride ?: readerPage?.enhancementKeySuffix.orEmpty()
+    }
+
+    private fun buildEnhancementData(
+        streamFn: (() -> java.io.InputStream)? = null,
+        originalData: Any? = null,
+    ): Any? {
+        fun buffered(stream: (() -> java.io.InputStream)?): Any? {
+            return stream?.let {
+                try {
+                    Buffer().readFrom(it())
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }
+
+        enhancementStreamOverride?.let { enhancedStream ->
+            return buffered(enhancedStream)
+        }
+
+        readerPage?.let { page ->
+            return buffered(page.stream) ?: page.imageUrl
+        }
+
+        return when (originalData) {
+            is ReaderPage -> buffered(originalData.stream) ?: originalData.imageUrl
+            else -> buffered(streamFn) ?: originalData
+        }
+    }
+
+    private fun enqueueEnhancement(
+        mId: Long,
+        cId: Long,
+        pIdx: Int,
+        highPriority: Boolean,
+        streamFn: (() -> java.io.InputStream)? = null,
+        originalData: Any? = null,
+    ) {
+        val data = buildEnhancementData(streamFn, originalData) ?: return
+        ImageEnhancer.enhance(
+            context.applicationContext,
+            mId,
+            cId,
+            pIdx,
+            data,
+            highPriority,
+            enhancementVariant(),
+        )
+    }
+
+    private fun requeueEnhancement(
+        mId: Long,
+        cId: Long,
+        pIdx: Int,
+        triggerData: Any?,
+        streamFn: (() -> java.io.InputStream)? = null,
+        forceCurrentPage: Boolean = false,
+    ) {
+        val data = triggerData ?: buildEnhancementData(streamFn, triggerData)
+
+        if (data == null) {
+            logcat(LogPriority.WARN) {
+                "ReaderPageImageView: Unable to re-enqueue page $pIdx because source data is unavailable"
+            }
+            return
+        }
+
+        val isCurrent = forceCurrentPage || pIdx == currentGlobalPageIndex || pIdx == ImageEnhancer.targetPageIndex
+        logcat(LogPriority.WARN) {
+            "ReaderPageImageView: Re-enqueueing page $pIdx after invalid enhanced cache (current=$isCurrent)"
+        }
+
+        ImageEnhancer.enhance(context.applicationContext, mId, cId, pIdx, data, isCurrent, enhancementVariant())
+    }
+
+    private suspend fun healInvalidEnhancedCache(
+        mId: Long,
+        cId: Long,
+        pIdx: Int,
+        configHash: String,
+        triggerData: Any?,
+        streamFn: (() -> java.io.InputStream)? = null,
+        forceCurrentPage: Boolean = false,
+    ) {
+        val pageVariant = enhancementVariant()
+        val removed = ImageEnhancementCache.removeCachedImage(mId, cId, pIdx, configHash, pageVariant)
+        logcat(if (removed) LogPriority.WARN else LogPriority.ERROR) {
+            "ReaderPageImageView: Invalid enhanced cache for page $pIdx/$pageVariant removed=$removed"
+        }
+
+        withUIContext {
+            pageView?.alpha = 1f
+            enhancedOverlay.setImageBitmap(null)
+            enhancedOverlay.isVisible = false
+            enhancedBitmap?.recycle()
+            enhancedBitmap = null
+            isSettingProcessedImage = false
+            updateStatus(context.stringResource(MR.strings.reader_status_processing))
+        }
+
+        requeueEnhancement(mId, cId, pIdx, triggerData, streamFn, forceCurrentPage)
+    }
+
 
     @CallSuper
     open fun onViewClicked() {
@@ -308,63 +507,56 @@ open class ReaderPageImageView @JvmOverloads constructor(
         // Update global current page index to help other instances decide if they should self-heal
         if (pIdx >= 0) {
              currentGlobalPageIndex = pIdx
-             ImageEnhancer.targetPageIndex = pIdx
+             ImageEnhancer.reprioritizeAround(pIdx, enhancementVariant())
         }
 
         if (pIdx >= 0 && mId != -1L && cId != -1L) {
              // 1. Check cache status and update UI
              if (realCuganEnabled) {
                  ImageEnhancementCache.init(context)
-                 val configHash = ImageEnhancementCache.getConfigHash(
+                val configHash = ImageEnhancementCache.getConfigHash(
                      realCuganNoiseLevel, realCuganScale, realCuganInputScale,
                      realCuganModel, realCuganMaxSizeWidth, realCuganMaxSizeHeight, realCuganResizeLargeImage
                  )
+                 val pageVariant = enhancementVariant()
                  
-                 val cachedFile = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash)
+                 val cachedFile = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant)
                  if (cachedFile != null) {
                      // Already processed - update status and load enhanced image
                      logcat(LogPriority.DEBUG) { "ReaderPageImageView: onPageSelected - Page $pIdx found in cache" }
-                     updateStatus("PROCESSED")
-                     
                      val uriString = cachedFile.toURI().toString()
                      if (currentLoadedUri != uriString) {
                          // Load the enhanced image if not already loaded or if source changed
-                         launchIO {
-                             val bitmap = try {
-                                 android.graphics.BitmapFactory.decodeFile(cachedFile.absolutePath)
-                             } catch (e: Exception) { null }
+                         viewScope.launchIO {
+                             val transformedSource = enhancedImageSourceFactory?.invoke(cachedFile)
+                             if (transformedSource != null) {
+                                 withUIContext {
+                                     setProcessedSource(cachedFile, transformedSource = transformedSource)
+                                 }
+                                 return@launchIO
+                             }
+
+                             val bitmap = decodeEnhancedBitmap(cachedFile)
                              
                              if (bitmap != null) {
                                  withUIContext {
-                                     enhancedOverlay.bringToFront()
-                                     enhancedOverlay.setImageBitmap(bitmap)
-                                     enhancedOverlay.alpha = 1f
-                                     enhancedOverlay.isVisible = true
-                                     statusView.bringToFront()
-                                     enhancedBitmap = bitmap
-                                     isSettingProcessedImage = true
-                                     
-                                     // Hide underlying image while we swap it in background
-                                     pageView?.alpha = 0f
-                                     
-                                     // Swap source in background view
-                                     val uri = android.net.Uri.fromFile(cachedFile)
-                                     (pageView as? SubsamplingScaleImageView)?.setImage(ImageSource.uri(context, uri))
-                                     currentLoadedUri = uriString
+                                     setProcessedSource(cachedFile, bitmap = bitmap)
                                  }
+                             } else {
+                                 healInvalidEnhancedCache(mId, cId, pIdx, configHash, readerPage, forceCurrentPage = true)
+                                 startEnhancementPolling(mId, cId, pIdx, configHash, readerPage)
                              }
                          }
+                     } else {
+                         updateStatus(context.stringResource(MR.strings.reader_status_processed))
                      }
-                 } else if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash)) {
+                 } else if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
 
-                     updateStatus("RAW")
-                 } else {
-                     // Not in cache, not skipped - ensure it's being processed with high priority
-                     updateStatus("PROCESSING")
-                     val page = readerPage
-                     if (page != null) {
-                         ImageEnhancer.enhance(context.applicationContext, page, true)
-                     }
+                     updateStatus(context.stringResource(MR.strings.reader_status_raw))
+                } else {
+                    // Not in cache, not skipped - ensure it's being processed with high priority
+                    updateStatus(context.stringResource(MR.strings.reader_status_processing))
+                     enqueueEnhancement(mId, cId, pIdx, highPriority = true)
                      
                      // Start/restart polling if not already running
                      startEnhancementPolling(mId, cId, pIdx, configHash)
@@ -609,7 +801,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
         originalData: Any? = null
     ) {
         if (isSettingProcessedImage || !realCuganEnabled) {
-            updateStatus(if (realCuganEnabled) null else "RAW")
+            updateStatus(if (realCuganEnabled) null else context.stringResource(MR.strings.reader_status_raw))
             return
         }
 
@@ -633,48 +825,68 @@ open class ReaderPageImageView @JvmOverloads constructor(
             realCuganMaxSizeHeight,
             realCuganResizeLargeImage
         )
+        val pageVariant = enhancementVariant()
 
-        val cachedFile = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash)
+        val cachedFile = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant)
         if (cachedFile != null) {
             logcat(LogPriority.DEBUG) { "ReaderPageImageView: Page $pIdx found in cache on first check: ${cachedFile.absolutePath}" }
-            val uri = android.net.Uri.fromFile(cachedFile)
-            setImage(ImageSource.uri(context, uri))
-            currentLoadedUri = cachedFile.toURI().toString()
-            isVisible = true
-            updateStatus("PROCESSED")
+            val transformedSource = enhancedImageSourceFactory?.invoke(cachedFile)
+            if (transformedSource != null) {
+                setProcessedSource(cachedFile, transformedSource = transformedSource)
+            } else {
+                val bitmap = decodeEnhancedBitmap(cachedFile)
+                if (bitmap != null) {
+                    val uri = android.net.Uri.fromFile(cachedFile)
+                    setImage(ImageSource.uri(context, uri))
+                    currentLoadedUri = cachedFile.toURI().toString()
+                    isVisible = true
+                    updateStatus(context.stringResource(MR.strings.reader_status_processed))
+                } else {
+                    viewScope.launchIO {
+                        healInvalidEnhancedCache(
+                            mId = mId,
+                            cId = cId,
+                            pIdx = pIdx,
+                            configHash = configHash,
+                            triggerData = originalData,
+                            streamFn = streamFn,
+                            forceCurrentPage = pIdx == currentGlobalPageIndex,
+                        )
+                        startEnhancementPolling(mId, cId, pIdx, configHash, originalData, streamFn)
+                    }
+                }
+            }
             return
         }
 
         
-        if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash)) {
+        if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
             logcat(LogPriority.DEBUG) { "ReaderPageImageView: Page $pIdx marked as skipped, showing RAW" }
-            updateStatus("RAW")
+            updateStatus(context.stringResource(MR.strings.reader_status_raw))
             return
         }
 
         logcat(LogPriority.DEBUG) { "ReaderPageImageView: Page $pIdx NOT in cache, starting monitoring (m=$mId, c=$cId, config=$configHash)" }
         
         // Trigger enhancement if it's not already in progress
-        val triggerData = readerPage ?: streamFn?.let {
-            try {
-                okio.Buffer().readFrom(it())
-            } catch (e: Exception) {
-                null
-            }
-        } ?: originalData
+        val triggerData = buildEnhancementData(streamFn, originalData)
         
         
         if (triggerData != null) {
             // Use High Priority if this is the current target page (the one user is viewing)
             // This ensures re-queued pages are processed immediately, not stuck in low priority
             val isCurrentPage = pIdx == ImageEnhancer.targetPageIndex
+            val isInitialTargetPage = currentGlobalPageIndex < 0 && isCurrentPage
+            val canEnqueueNow = currentGlobalPageIndex >= 0 || isInitialTargetPage
             
-            logcat(LogPriority.DEBUG) { "ReaderPageImageView: Triggering enhancement for page $pIdx. isCurrentPage=$isCurrentPage (target=${ImageEnhancer.targetPageIndex})" }
+            if (canEnqueueNow) {
+                logcat(LogPriority.DEBUG) { "ReaderPageImageView: Triggering enhancement for page $pIdx. isCurrentPage=$isCurrentPage (target=${ImageEnhancer.targetPageIndex})" }
 
-            if (triggerData is ReaderPage) {
-                ImageEnhancer.enhance(context.applicationContext, triggerData, isCurrentPage)
+                ImageEnhancer.enhance(context.applicationContext, mId, cId, pIdx, triggerData, isCurrentPage, pageVariant)
             } else {
-                ImageEnhancer.enhance(context.applicationContext, mId, cId, pIdx, triggerData, isCurrentPage)
+                logcat(LogPriority.DEBUG) {
+                    "ReaderPageImageView: Delaying enhancement enqueue for page $pIdx until initial target page ${ImageEnhancer.targetPageIndex} starts"
+                }
             }
         }
         
@@ -695,50 +907,45 @@ open class ReaderPageImageView @JvmOverloads constructor(
         streamFn: (() -> java.io.InputStream)? = null
     ) {
         processingJob?.cancel()
-        processingJob = launchIO {
+        processingJob = viewScope.launchIO {
             try {
+                val pageVariant = enhancementVariant()
                 var attempts = 0
                 var wasEnhancing = false
                 while (attempts < 120 && isActive) {
-                    if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash)) {
-                        withUIContext { updateStatus("RAW") }
+                    if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
+                        withUIContext { updateStatus(context.stringResource(MR.strings.reader_status_raw)) }
                         return@launchIO
                     }
-                    val file = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash)
+                    val file = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant)
                     if (file != null) {
-                        logcat(LogPriority.DEBUG) { "ReaderPageImageView: Page $pIdx found in cache during polling: ${file.absolutePath}" }
-                        val bitmap = try {
-                            android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-                        } catch (e: Exception) { null }
+                        logcat(LogPriority.DEBUG) { "ReaderPageImageView: Page $pIdx/$pageVariant found in cache during polling: ${file.absolutePath}" }
+                        val transformedSource = enhancedImageSourceFactory?.invoke(file)
+                        if (transformedSource != null) {
+                            withUIContext {
+                                setProcessedSource(file, transformedSource = transformedSource)
+                            }
+                            return@launchIO
+                        }
+
+                        val bitmap = decodeEnhancedBitmap(file)
 
                         if (bitmap != null) {
                             withUIContext {
-                                enhancedOverlay.bringToFront()
-                                enhancedOverlay.setImageBitmap(bitmap)
-                                enhancedOverlay.alpha = 1f
-                                enhancedOverlay.isVisible = true
-                                updateStatus("PROCESSED")
-                                statusView.bringToFront()
-                                isSettingProcessedImage = true
-                                enhancedBitmap = bitmap
-                                if (context != null) {
-                                    val uri = android.net.Uri.fromFile(file)
-                                    val uriString = file.toURI().toString()
-                                    pageView?.alpha = 0f
-                                    (pageView as? SubsamplingScaleImageView)?.setImage(ImageSource.uri(context, uri))
-                                    currentLoadedUri = uriString
-                                    isVisible = true
-                                }
+                                setProcessedSource(file, bitmap = bitmap)
                             }
                         } else {
-                            withUIContext {
-                                val uri = android.net.Uri.fromFile(file)
-                                val uriString = file.toURI().toString()
-                                (pageView as? SubsamplingScaleImageView)?.setImage(ImageSource.uri(context, uri))
-                                currentLoadedUri = uriString
-                                isVisible = true
-                                updateStatus("PROCESSED")
-                            }
+                            healInvalidEnhancedCache(
+                                mId = mId,
+                                cId = cId,
+                                pIdx = pIdx,
+                                configHash = configHash,
+                                triggerData = originalData,
+                                streamFn = streamFn,
+                                forceCurrentPage = pIdx == currentGlobalPageIndex,
+                            )
+                            delay(200)
+                            continue
                         }
 
                         return@launchIO
@@ -750,30 +957,27 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         wasEnhancing = true
                         val rawProgress = eu.kanade.tachiyomi.util.waifu2x.Waifu2x.getProgressPercent()
                         if (rawProgress in 0..100) {
-                            updateStatus("ENHANCING... $rawProgress%")
+                            updateStatus(context.stringResource(MR.strings.reader_status_enhancing_progress, rawProgress))
                         } else {
                             val dots = (rawProgress % 3).let { if (it < 0) -it else it } + 1
-                            updateStatus("ENHANCING" + ".".repeat(dots))
+                            updateStatus(context.stringResource(MR.strings.reader_status_enhancing) + ".".repeat(dots))
                         }
-                    } else if (ImageEnhancer.hasRequest(mId, cId, pIdx)) {
+                    } else if (ImageEnhancer.hasRequest(mId, cId, pIdx, pageVariant)) {
                         if (!wasEnhancing) {
-                            updateStatus("QUEUED")
+                            updateStatus(context.stringResource(MR.strings.reader_status_queued))
                         } else {
-                            updateStatus("FINISHING...")
+                            updateStatus(context.stringResource(MR.strings.reader_status_finishing))
                         }
                     } else {
                         // Not in queue, not cached - might need to re-enqueue
                         val current = currentGlobalPageIndex
                         val shouldHeal = pIdx >= current && pIdx <= current + preloadSize
-                        if (shouldHeal && !ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash)) {
-                            logcat(LogPriority.WARN) { "ReaderPageImageView: Polling re-enqueue page $pIdx (cur=$current)" }
+                        if (shouldHeal && !ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
+                            logcat(LogPriority.WARN) { "ReaderPageImageView: Polling re-enqueue page $pIdx/$pageVariant (cur=$current)" }
                             val isCurrent = pIdx == current
-                            val page = readerPage
-                            if (page != null) {
-                                ImageEnhancer.enhance(context.applicationContext, page, isCurrent)
-                            }
+                            enqueueEnhancement(mId, cId, pIdx, highPriority = isCurrent, originalData = originalData, streamFn = streamFn)
                         } else {
-                            updateStatus("RAW")
+                            updateStatus(context.stringResource(MR.strings.reader_status_raw))
                             delay(2000)
                             return@launchIO
                         }
@@ -782,6 +986,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     delay(500)
                     attempts++
                 }
+            } catch (_: CancellationException) {
+                return@launchIO
             } catch (e: Exception) {
                 android.util.Log.e("ReaderPageImageView", "Error in polling for page $pIdx", e)
             }
@@ -881,6 +1087,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        processingJob?.cancel()
+        processingJob = null
+        viewScope.cancel()
         
         // Cancel enhancement if this view is detached/recycled
         // Use readerPage as primary source, falling back to properties
@@ -888,8 +1097,14 @@ open class ReaderPageImageView @JvmOverloads constructor(
         val cId = readerPage?.chapter?.chapter?.id ?: chapterId
         val pIdx = readerPage?.index ?: pageIndex
 
-        if (mId != -1L && cId != -1L && pIdx >= 0) {
-             ImageEnhancer.cancel(mId, cId, pIdx)
+        val pageVariant = enhancementVariant()
+        if (
+            mId != -1L &&
+            cId != -1L &&
+            pIdx >= 0 &&
+            !ImageEnhancer.isFocusedTarget(pIdx, pageVariant)
+        ) {
+             ImageEnhancer.cancel(mId, cId, pIdx, pageVariant)
         }
 
         enhancedOverlay.setImageBitmap(null)

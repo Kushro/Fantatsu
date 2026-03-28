@@ -1,5 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
 
+import android.app.Application
+import android.content.res.Configuration
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerConfig
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation
@@ -9,6 +11,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.navigation.KindlishNavigation
 import eu.kanade.tachiyomi.ui.reader.viewer.navigation.LNavigation
 import eu.kanade.tachiyomi.ui.reader.viewer.navigation.RightAndLeftNavigation
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
@@ -22,7 +25,13 @@ import uy.kohesive.injekt.api.get
 class WebtoonConfig(
     scope: CoroutineScope,
     readerPreferences: ReaderPreferences = Injekt.get(),
-) : ViewerConfig(readerPreferences, scope) {
+) : ViewerConfig(
+    readerPreferences,
+    scope,
+    isLandscape = {
+        Injekt.get<Application>().resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    },
+) {
 
     var themeChangedListener: (() -> Unit)? = null
 
@@ -95,6 +104,89 @@ class WebtoonConfig(
             .drop(1)
             .distinctUntilChanged()
             .onEach { themeChangedListener?.invoke() }
+            .launchIn(scope)
+
+        readerPreferences.realCuganEnabled().changes()
+            .drop(1)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(Injekt.get())
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganModel().changes()
+            .drop(1)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(Injekt.get())
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganNoiseLevel().changes()
+            .drop(1)
+            .debounce(500)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(Injekt.get())
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganScale().changes()
+            .drop(1)
+            .debounce(500)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(Injekt.get())
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganInputScale().changes()
+            .drop(1)
+            .debounce(500)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(Injekt.get())
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganMaxSizeWidth().changes()
+            .drop(1)
+            .debounce(500)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(Injekt.get())
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganMaxSizeHeight().changes()
+            .drop(1)
+            .debounce(500)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(Injekt.get())
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganResizeLargeImage().changes()
+            .drop(1)
+            .onEach {
+                eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.clear(Injekt.get())
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganShowStatus().changes()
+            .drop(1)
+            .onEach {
+                imagePropertyChangedListener?.invoke()
+            }
+            .launchIn(scope)
+
+        readerPreferences.realCuganPreloadSize().changes()
+            .drop(1)
+            .onEach {
+                imagePropertyChangedListener?.invoke()
+            }
             .launchIn(scope)
     }
 
