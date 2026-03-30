@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
 
 import android.content.res.Resources
 import android.view.LayoutInflater
+import android.widget.LinearLayout
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -46,6 +47,12 @@ class WebtoonPageHolder(
     viewer: WebtoonViewer,
 ) : WebtoonBaseHolder(frame, viewer) {
 
+    private data class DisplaySegment(
+        val bytes: ByteArray,
+        val isAnimated: Boolean,
+        val enhancementVariant: String,
+    )
+
     /**
      * Loading progress bar to indicate the current progress.
      */
@@ -68,6 +75,15 @@ class WebtoonPageHolder(
     private val parentHeight
         get() = viewer.recycler.height
 
+    private val pageContainer = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+    }
+
+    private val segmentFrames = mutableListOf<ReaderPageImageView>()
+    private val loadedSegments = linkedSetOf<Int>()
+    private var pendingSelectionSequence: Int? = null
+    private var lastSelectionSequence = -1
+
     /**
      * Page of a chapter.
      */
@@ -81,11 +97,8 @@ class WebtoonPageHolder(
     private var loadJob: Job? = null
 
     init {
+        frame.addView(pageContainer, 0, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         refreshLayoutParams()
-
-        frame.onImageLoaded = { onImageDecoded() }
-        frame.onImageLoadError = { error -> setError(error) }
-        frame.onScaleChanged = { viewer.activity.hideMenu() }
     }
 
     /**
@@ -98,19 +111,24 @@ class WebtoonPageHolder(
         frame.chapterId = page.chapter.chapter.id ?: -1L
         frame.readerPage = page
         frame.controlsCurrentPageSelection = false
+        pendingSelectionSequence = null
+        lastSelectionSequence = -1
         loadJob?.cancel()
         loadJob = scope.launch { loadPageAndProcessStatus() }
         refreshLayoutParams()
-        if (page.index == ReaderPageImageView.currentGlobalPageIndex) {
-            frame.post {
-                if (this.page?.index == ReaderPageImageView.currentGlobalPageIndex) {
-                    frame.onPageSelected(true)
-                }
-            }
-        }
     }
 
     fun boundPage(): ReaderPage? = page
+
+    fun notifyPageSelected(selectionSequence: Int) {
+        if (lastSelectionSequence == selectionSequence) return
+        pendingSelectionSequence = selectionSequence
+        if (segmentFrames.isEmpty()) return
+
+        lastSelectionSequence = selectionSequence
+        segmentFrames.forEach { it.onPageSelected(true) }
+        pendingSelectionSequence = null
+    }
 
     private fun refreshLayoutParams() {
         frame.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
@@ -132,7 +150,10 @@ class WebtoonPageHolder(
         loadJob = null
 
         removeErrorLayout()
-        frame.recycle()
+        loadedSegments.clear()
+        pendingSelectionSequence = null
+        lastSelectionSequence = -1
+        segmentFrames.forEach { it.recycle() }
         progressIndicator.setProgress(0)
         progressContainer.isVisible = true
     }
@@ -201,25 +222,16 @@ class WebtoonPageHolder(
     private suspend fun setImage() {
         progressIndicator.setProgress(0)
 
-        val streamFn = page?.stream ?: return
+        val page = page ?: return
+        val streamFn = page.stream ?: return
 
         try {
-            val (source, isAnimated) = withIOContext {
+            val segments = withIOContext {
                 val source = streamFn().use { process(Buffer().readFrom(it)) }
-                val isAnimated = ImageUtil.isAnimatedAndSupported(source)
-                Pair(source, isAnimated)
+                buildDisplaySegments(page, source)
             }
             withUIContext {
-                frame.setImage(
-                    source,
-                    isAnimated,
-                    ReaderPageImageView.Config(
-                        zoomDuration = viewer.config.doubleTapAnimDuration,
-                        minimumScaleType = SubsamplingScaleImageView.SCALE_TYPE_FIT_WIDTH,
-                        cropBorders = viewer.config.imageCropBorders,
-                    ),
-                    streamFn
-                )
+                bindDisplaySegments(page, segments)
                 removeErrorLayout()
             }
         } catch (e: Throwable) {
@@ -227,6 +239,108 @@ class WebtoonPageHolder(
             withUIContext {
                 setError(e)
             }
+        }
+    }
+
+    private fun buildDisplaySegments(page: ReaderPage, source: BufferedSource): List<DisplaySegment> {
+        val isAnimated = ImageUtil.isAnimatedAndSupported(source)
+        if (isAnimated) {
+            return listOf(
+                DisplaySegment(
+                    bytes = source.readByteArray(),
+                    isAnimated = true,
+                    enhancementVariant = page.enhancementKeySuffix,
+                ),
+            )
+        }
+
+        val splitSegments = ImageUtil.splitTallImageForReader(source.peek())
+        if (splitSegments.isNullOrEmpty()) {
+            return listOf(
+                DisplaySegment(
+                    bytes = source.readByteArray(),
+                    isAnimated = false,
+                    enhancementVariant = page.enhancementKeySuffix,
+                ),
+            )
+        }
+
+        return splitSegments.mapIndexed { index, bytes ->
+            DisplaySegment(
+                bytes = bytes,
+                isAnimated = false,
+                enhancementVariant = segmentVariant(page, index),
+            )
+        }
+    }
+
+    private fun bindDisplaySegments(page: ReaderPage, segments: List<DisplaySegment>) {
+        ensureSegmentFrames(segments.size)
+        loadedSegments.clear()
+
+        segments.forEachIndexed { index, segment ->
+            val segmentFrame = segmentFrames[index]
+            val streamFactory = { segment.bytes.inputStream() }
+
+            segmentFrame.recycle()
+            segmentFrame.pageIndex = page.index
+            segmentFrame.mangaId = viewer.activity.viewModel.manga?.id ?: -1L
+            segmentFrame.chapterId = page.chapter.chapter.id ?: -1L
+            segmentFrame.readerPage = page
+            segmentFrame.controlsCurrentPageSelection = false
+            segmentFrame.enhancementVariantOverride = segment.enhancementVariant
+            segmentFrame.enhancementStreamOverride = streamFactory
+            segmentFrame.suppressDefaultStatus = false
+            segmentFrame.onImageLoaded = { onSegmentImageLoaded(index, segments.size) }
+            segmentFrame.onImageLoadError = { error -> setError(error) }
+            segmentFrame.onScaleChanged = { viewer.activity.hideMenu() }
+            segmentFrame.onViewClicked = {}
+
+            segmentFrame.setImage(
+                Buffer().write(segment.bytes),
+                segment.isAnimated,
+                ReaderPageImageView.Config(
+                    zoomDuration = viewer.config.doubleTapAnimDuration,
+                    minimumScaleType = SubsamplingScaleImageView.SCALE_TYPE_FIT_WIDTH,
+                    cropBorders = viewer.config.imageCropBorders,
+                ),
+                streamFactory,
+            )
+        }
+
+        pendingSelectionSequence?.let { notifyPageSelected(it) }
+    }
+
+    private fun ensureSegmentFrames(targetCount: Int) {
+        while (segmentFrames.size < targetCount) {
+            val segmentFrame = ReaderPageImageView(context, isWebtoon = true).apply {
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            }
+            segmentFrames += segmentFrame
+            pageContainer.addView(segmentFrame)
+        }
+
+        while (segmentFrames.size > targetCount) {
+            val removed = segmentFrames.removeLast()
+            removed.recycle()
+            pageContainer.removeView(removed)
+        }
+    }
+
+    private fun onSegmentImageLoaded(index: Int, segmentCount: Int) {
+        loadedSegments += index
+        if (loadedSegments.size >= segmentCount) {
+            onImageDecoded()
+        }
+    }
+
+    private fun segmentVariant(page: ReaderPage, index: Int): String {
+        val segmentSuffix = "webtoon_seg_${index + 1}"
+        val baseVariant = page.enhancementKeySuffix
+        return if (baseVariant.isBlank()) {
+            segmentSuffix
+        } else {
+            "${baseVariant}__$segmentSuffix"
         }
     }
 

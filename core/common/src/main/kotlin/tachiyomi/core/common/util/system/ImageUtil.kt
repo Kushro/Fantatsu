@@ -227,7 +227,7 @@ object ImageUtil {
             inJustDecodeBounds = false
         }
 
-        val splitDataList = options.splitData
+        val splitDataList = options.splitData(READER_SEGMENT_MAX_HEIGHT)
 
         return try {
             splitDataList.forEach { splitData ->
@@ -263,18 +263,60 @@ object ImageUtil {
         }
     }
 
+    /**
+     * Splits a tall image into independently decodable JPEG segments for reader display.
+     *
+     * Returns `null` when the image should stay as a single segment or when splitting fails.
+     */
+    fun splitTallImageForReader(imageSource: BufferedSource): List<ByteArray>? {
+        if (isAnimatedAndSupported(imageSource) || !isTallImage(imageSource)) {
+            return null
+        }
+
+        val bitmapRegionDecoder = getBitmapRegionDecoder(imageSource.peek().inputStream())
+        if (bitmapRegionDecoder == null) {
+            logcat { "Failed to create BitmapRegionDecoder for reader tall-image split" }
+            return null
+        }
+
+        val options = extractImageOptions(imageSource).apply {
+            inJustDecodeBounds = false
+        }
+        val splitDataList = options.splitData(READER_SEGMENT_MAX_HEIGHT)
+        if (splitDataList.size <= 1) {
+            bitmapRegionDecoder.recycle()
+            return null
+        }
+
+        return try {
+            splitDataList.mapNotNull { splitData ->
+                val region = Rect(0, splitData.topOffset, splitData.splitWidth, splitData.bottomOffset)
+                val splitBitmap = bitmapRegionDecoder.decodeRegion(region, options) ?: return null
+                Buffer().use { output ->
+                    splitBitmap.compress(Bitmap.CompressFormat.JPEG, 100, output.outputStream())
+                    splitBitmap.recycle()
+                    output.readByteArray()
+                }
+            }
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR, e) { "Failed to split tall image for reader display" }
+            null
+        } finally {
+            bitmapRegionDecoder.recycle()
+        }
+    }
+
     private fun splitImageName(filenamePrefix: String, index: Int) = "${filenamePrefix}__${"%03d".format(
         Locale.ENGLISH,
         index + 1,
     )}.jpg"
 
-    private val BitmapFactory.Options.splitData
-        get(): List<SplitData> {
+    private fun BitmapFactory.Options.splitData(maxSplitHeight: Int = optimalImageHeight): List<SplitData> {
             val imageHeight = outHeight
             val imageWidth = outWidth
 
-            // -1 so it doesn't try to split when imageHeight = optimalImageHeight
-            val partCount = (imageHeight - 1) / optimalImageHeight + 1
+            // -1 so it doesn't try to split when imageHeight = maxSplitHeight
+            val partCount = (imageHeight - 1) / maxSplitHeight + 1
             val optimalSplitHeight = imageHeight / partCount
 
             logcat {
@@ -299,7 +341,7 @@ object ImageUtil {
                     add(SplitData(index, topOffset, splitHeight, imageWidth))
                 }
             }
-        }
+    }
 
     data class SplitData(
         val index: Int,
@@ -573,6 +615,7 @@ object ImageUtil {
     }
 
     private val optimalImageHeight = getDisplayMaxHeightInPx * 2
+    private const val READER_SEGMENT_MAX_HEIGHT = 2000
 
     /**
      * Taken from Coil

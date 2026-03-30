@@ -76,6 +76,7 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
      * Currently active item. It can be a chapter page or a chapter transition.
      */
     private var currentPage: Any? = null
+    private var pageSelectionSequence = 0
 
     private val threshold: Int =
         Injekt.get<ReaderPreferences>()
@@ -218,7 +219,8 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         ReaderPageImageView.currentGlobalPageIndex = page.index
         ImageEnhancer.reprioritizeAround(page.index, page.enhancementKeySuffix)
         activity.onPageSelected(page)
-        dispatchPageSelectedToHolder(page)
+        pageSelectionSequence++
+        dispatchPageSelectedToHolder(page, pageSelectionSequence)
 
         // Preload next chapter once we're within the last 5 pages of the current chapter
         val inPreloadRange = pages.size - page.number < 5
@@ -357,9 +359,9 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         return false
     }
 
-    private fun dispatchPageSelectedToHolder(page: ReaderPage) {
+    private fun dispatchPageSelectedToHolder(page: ReaderPage, selectionSequence: Int) {
         val notifyHolder = {
-            findAttachedHolderForPage(page)?.frame?.onPageSelected(true)
+            findAttachedHolderForPage(page)?.notifyPageSelected(selectionSequence)
         }
         notifyHolder()
         recycler.post { notifyHolder() }

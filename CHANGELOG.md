@@ -34,6 +34,12 @@ The format is a modified version of [Keep a Changelog](https://keepachangelog.co
 ### Other
 - Enable logcat logging on stable and debug builds without enabling verbose logging ([@NGB-Was-Taken](https://github.com/NGB-Was-Taken)) ([#2836](https://github.com/mihonapp/mihon/pull/2836))
 
+## [v1.1.3] - 2026-03-30
+### Fixed
+- Fix Webtoon reader handling for long-image segmentation
+- Fix segmented Webtoon image enhancement status display
+- Fix reader crash and ANR when returning after segmented image load errors
+
 ## [v1.1.2] - 2026-03-29
 ### Added
 - Add adjustable page gap for double-page layout

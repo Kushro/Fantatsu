@@ -801,7 +801,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         }
 
                         override fun onImageLoadError(e: Exception) {
-                            onImageLoadError(e)
+                            this@ReaderPageImageView.onImageLoadError(e)
                         }
                     },
                 )
