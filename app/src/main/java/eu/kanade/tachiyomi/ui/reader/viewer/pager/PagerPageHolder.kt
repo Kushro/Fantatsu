@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.graphics.Paint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Rect
@@ -12,6 +13,7 @@ import android.util.TypedValue
 import android.widget.TextView
 import androidx.core.graphics.applyCanvas
 import androidx.core.graphics.createBitmap
+import androidx.core.view.doOnLayout
 import androidx.core.view.isVisible
 import eu.kanade.presentation.util.formattedMessage
 import eu.kanade.tachiyomi.databinding.ReaderErrorBinding
@@ -49,6 +51,8 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 import eu.kanade.tachiyomi.util.system.isNightMode
 
 /**
@@ -237,6 +241,7 @@ class PagerPageHolder(
     private suspend fun setImage() {
         progressIndicator?.setProgress(0)
         refreshEnhancementTargets()
+        awaitCombinedPageLayoutIfNeeded()
 
         val streamFn = page.stream ?: return
         val streamFn2 = extraPage?.stream
@@ -290,12 +295,35 @@ class PagerPageHolder(
         }
     }
 
+    private suspend fun awaitCombinedPageLayoutIfNeeded() {
+        if (extraPage == null || !viewer.config.doublePages || hasCombinedViewportSize()) {
+            return
+        }
+
+        suspendCancellableCoroutine { continuation ->
+            doOnLayout {
+                if (continuation.isActive) {
+                    continuation.resume(Unit)
+                }
+            }
+        }
+    }
+
+    private fun hasCombinedViewportSize(): Boolean {
+        return width > 0 && height > 0
+    }
+
     private fun usesTransformedEnhancedDisplay(): Boolean {
         return extraPage != null || viewer.config.dualPageRotateToFit
     }
 
     private fun usesEnhancedDisplayTransform(): Boolean {
-        return usesTransformedEnhancedDisplay() || viewer.config.splitPages || viewer.config.autoSplitPages
+        return usesTransformedEnhancedDisplay() || shouldSplitWidePagesInSinglePageMode()
+    }
+
+    private fun shouldSplitWidePagesInSinglePageMode(): Boolean {
+        return !viewer.config.doublePages &&
+            (viewer.config.splitPages || viewer.config.autoSplitPages || viewer.config.autoDoublePages)
     }
 
     private fun refreshEnhancementTargets() {
@@ -604,17 +632,24 @@ class PagerPageHolder(
         val adjustedHingeGap = viewer.config.hingeGapSize.coerceAtLeast(0)
         val cellWidth = ((viewportWidth - adjustedHingeGap).coerceAtLeast(2)) / 2
         val result = createBitmap((cellWidth * 2) + adjustedHingeGap, viewportHeight)
+        val bitmapPaint =
+            Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
+                isFilterBitmap = true
+                isDither = true
+            }
 
         result.applyCanvas {
             drawColor(background)
 
             fun drawFitted(bitmap: Bitmap, cellLeft: Int, alignToCenter: Boolean) {
+                val horizontalInset = if (bitmap.width > 8) 1 else 0
+                val sourceRect = Rect(horizontalInset, 0, bitmap.width - horizontalInset, bitmap.height)
                 val scale = min(
-                    cellWidth / bitmap.width.toFloat(),
-                    viewportHeight / bitmap.height.toFloat(),
+                    cellWidth / sourceRect.width().toFloat(),
+                    viewportHeight / sourceRect.height().toFloat(),
                 )
-                val destWidth = (bitmap.width * scale).toInt().coerceAtLeast(1)
-                val destHeight = (bitmap.height * scale).toInt().coerceAtLeast(1)
+                val destWidth = (sourceRect.width() * scale).toInt().coerceAtLeast(1)
+                val destHeight = (sourceRect.height() * scale).toInt().coerceAtLeast(1)
                 val left =
                     if (alignToCenter) {
                         cellLeft + (cellWidth - destWidth)
@@ -623,7 +658,7 @@ class PagerPageHolder(
                     }
                 val top = (viewportHeight - destHeight) / 2
                 val dest = Rect(left, top, left + destWidth, top + destHeight)
-                drawBitmap(bitmap, null, dest, null)
+                drawBitmap(bitmap, sourceRect, dest, bitmapPaint)
             }
 
             val leftCellStart = 0
@@ -746,13 +781,14 @@ class PagerPageHolder(
             return rotateDualPage(imageSource)
         }
 
-        if (!viewer.config.doublePages) {
-            if ((viewer.config.splitPages || viewer.config.autoSplitPages) && isWideImage(imageSource)) {
-                if (page !is InsertPage) {
-                    onPageSplit(page)
-                }
-                return splitInHalf(imageSource, page)
+        if (shouldSplitWidePagesInSinglePageMode() && isWideImage(imageSource)) {
+            if (page !is InsertPage) {
+                onPageSplit(page)
             }
+            return splitInHalf(imageSource, page)
+        }
+
+        if (!viewer.config.doublePages) {
             return imageSource
         }
 
