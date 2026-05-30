@@ -312,35 +312,35 @@ object ImageUtil {
     )}.jpg"
 
     private fun BitmapFactory.Options.splitData(maxSplitHeight: Int = optimalImageHeight): List<SplitData> {
-            val imageHeight = outHeight
-            val imageWidth = outWidth
+        val imageHeight = outHeight
+        val imageWidth = outWidth
 
-            // -1 so it doesn't try to split when imageHeight = maxSplitHeight
-            val partCount = (imageHeight - 1) / maxSplitHeight + 1
-            val optimalSplitHeight = imageHeight / partCount
+        // -1 so it doesn't try to split when imageHeight = maxSplitHeight
+        val partCount = (imageHeight - 1) / maxSplitHeight + 1
+        val optimalSplitHeight = imageHeight / partCount
 
-            logcat {
-                "Generating SplitData for image (height: $imageHeight): " +
-                    "$partCount parts @ ${optimalSplitHeight}px height per part"
-            }
+        logcat {
+            "Generating SplitData for image (height: $imageHeight): " +
+                "$partCount parts @ ${optimalSplitHeight}px height per part"
+        }
 
-            return buildList {
-                val range = 0..<partCount
-                for (index in range) {
-                    // Only continue if the list is empty or there is image remaining
-                    if (isNotEmpty() && imageHeight <= last().bottomOffset) break
+        return buildList {
+            val range = 0..<partCount
+            for (index in range) {
+                // Only continue if the list is empty or there is image remaining
+                if (isNotEmpty() && imageHeight <= last().bottomOffset) break
 
-                    val topOffset = index * optimalSplitHeight
-                    var splitHeight = min(optimalSplitHeight, imageHeight - topOffset)
+                val topOffset = index * optimalSplitHeight
+                var splitHeight = min(optimalSplitHeight, imageHeight - topOffset)
 
-                    if (index == range.last) {
-                        val remainingHeight = imageHeight - (topOffset + splitHeight)
-                        splitHeight += remainingHeight
-                    }
-
-                    add(SplitData(index, topOffset, splitHeight, imageWidth))
+                if (index == range.last) {
+                    val remainingHeight = imageHeight - (topOffset + splitHeight)
+                    splitHeight += remainingHeight
                 }
+
+                add(SplitData(index, topOffset, splitHeight, imageWidth))
             }
+        }
     }
 
     data class SplitData(
