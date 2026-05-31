@@ -449,11 +449,6 @@ class ReaderViewModel @JvmOverloads constructor(
      * read, update tracking services, enqueue downloaded chapter deletion, and updating the active chapter if this
      * [page]'s chapter is different from the currently active.
      */
-    /**
-     * Called every time a page changes on the reader. Used to mark the flag of chapters being
-     * read, update tracking services, enqueue downloaded chapter deletion, and updating the active chapter if this
-     * [page]'s chapter is different from the currently active.
-     */
     fun onPageSelected(
         page: ReaderPage,
         hasExtraPage: Boolean = false,

@@ -158,7 +158,15 @@ object ImageEnhancer {
         enhance(context, mangaId, chapterId, page.index, data, highPriority, page.enhancementKeySuffix)
     }
 
-    fun enhance(context: Context, mangaId: Long, chapterId: Long, pageIndex: Int, data: Any, highPriority: Boolean, pageVariant: String = "") {
+    fun enhance(
+        context: Context,
+        mangaId: Long,
+        chapterId: Long,
+        pageIndex: Int,
+        data: Any,
+        highPriority: Boolean,
+        pageVariant: String = "",
+    ) {
         val isInitialTargetRequest = !initialTargetEnqueued && pageIndex == targetPageIndex
         if (!highPriority && !initialTargetEnqueued && !isInitialTargetRequest) {
             logcat(LogPriority.DEBUG) {
