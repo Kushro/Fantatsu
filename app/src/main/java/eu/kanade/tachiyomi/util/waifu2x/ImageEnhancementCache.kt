@@ -67,7 +67,10 @@ object ImageEnhancementCache {
 
     fun removeSkipMarker(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
         return try {
-            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant) + ".skip")
+            val file = File(
+                getChapterDir(mangaId, chapterId),
+                getFilename(pageIndex, configHash, pageVariant) + ".skip",
+            )
             !file.exists() || file.delete()
         } catch (e: Exception) {
             android.util.Log.e("ImageEnhancementCache", "Failed to remove skip marker for page $pageIndex", e)
