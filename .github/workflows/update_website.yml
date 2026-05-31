@@ -7,6 +7,8 @@ on:
       - deleted
       - edited
 
+permissions: {}
+
 jobs:
   update_website:
     runs-on: 'ubuntu-24.04'

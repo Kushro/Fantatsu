@@ -8,6 +8,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   get_tag:
     if: github.repository == 'mihonapp/mihon'
@@ -127,6 +130,8 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-24.04
     needs: [get_tag, build, build_foss]
+    permissions:
+      contents: write
 
     steps:
       - name: Download all artifacts
