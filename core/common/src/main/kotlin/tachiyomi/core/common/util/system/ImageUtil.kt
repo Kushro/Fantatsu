@@ -828,7 +828,15 @@ object ImageUtil {
             bitmap[unPaddedSide, (bitmap.height * (it / 50f)).toInt()].isWhiteOrDark(checkWhite)
         }
         return if (isNotFullyUnPadded) {
-            if (paddedCount == 49) 2 else if (paddedCount >= (if (halfCheck) 25 else 47)) 1 else 0
+            if (paddedCount == 49) {
+                2
+            } else {
+                if (paddedCount >= (if (halfCheck) 25 else 47)) {
+                    1
+                } else {
+                    0
+                }
+            }
         } else {
             0
         }
