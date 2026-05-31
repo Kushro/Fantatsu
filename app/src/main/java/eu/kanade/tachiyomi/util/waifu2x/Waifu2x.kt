@@ -72,14 +72,7 @@ object Waifu2x {
     private data class RealCuganConfig(val noise: Int, val scale: Int, val isPro: Boolean)
     @Volatile private var lastRealCuganConfig: RealCuganConfig? = null
 
-    fun initRealCugan(
-        context: Context,
-        noiseLevel: Int,
-        scale: Int,
-        isPro: Boolean = false,
-        tileSleepMs: Int = 0,
-        tileSize: Int = 128,
-    ): Boolean {
+    fun initRealCugan(context: Context, noiseLevel: Int, scale: Int, isPro: Boolean = false, tileSleepMs: Int = 0, tileSize: Int = 128): Boolean {
         val newConfig = RealCuganConfig(noiseLevel, scale, isPro)
 
         // Fast path: if already initialized with same config, just update performance params and return
