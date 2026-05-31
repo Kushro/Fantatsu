@@ -351,10 +351,7 @@ class PagerPageHolder(
         }
     }
 
-    private fun currentDisplayStream(
-        targetPage: ReaderPage,
-        preferredEnhancedFile: java.io.File? = null,
-    ): java.io.InputStream? {
+    private fun currentDisplayStream(targetPage: ReaderPage, preferredEnhancedFile: java.io.File? = null): java.io.InputStream? {
         val enhancedFile = preferredEnhancedFile ?: currentEnhancedFile(targetPage)
         return try {
             when {

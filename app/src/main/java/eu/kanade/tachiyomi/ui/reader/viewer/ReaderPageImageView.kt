@@ -872,12 +872,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
         }
     }
 
-    fun setImage(
-        source: BufferedSource,
-        isAnimated: Boolean,
-        config: Config,
-        streamFn: (() -> java.io.InputStream)? = null,
-    ) {
+    fun setImage(source: BufferedSource, isAnimated: Boolean, config: Config, streamFn: (() -> java.io.InputStream)? = null) {
         this.config = config
         if (isAnimated) {
             prepareAnimatedImageView()

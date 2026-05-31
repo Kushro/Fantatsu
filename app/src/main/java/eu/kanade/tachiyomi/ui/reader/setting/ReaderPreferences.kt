@@ -89,8 +89,7 @@ class ReaderPreferences(
     
     fun realCuganEnabled() = preferenceStore.getBoolean("pref_realcugan_enabled", false)
 
-    // 0: No Denoise, 1: Denoise 1x, 2: Denoise 2x, 3: Denoise 3x, 4: Conservative
-    fun realCuganNoiseLevel() = preferenceStore.getInt("pref_realcugan_noise_level", 0)
+    fun realCuganNoiseLevel() = preferenceStore.getInt("pref_realcugan_noise_level", 0) // 0: No Denoise, 1: Denoise 1x, 2: Denoise 2x, 3: Denoise 3x, 4: Conservative
 
     fun realCuganScale() = preferenceStore.getInt("pref_realcugan_scale", 2) // 2x, 3x, 4x
 

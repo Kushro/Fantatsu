@@ -272,14 +272,7 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                                                 }
                                                 // --- End Output Resolution Limit ---
                                                 
-                                                val savedFile = ImageEnhancementCache.saveToCache(
-                                                    mangaId,
-                                                    chapterId,
-                                                    pageIndex,
-                                                    configHash,
-                                                    result,
-                                                    pageVariant,
-                                                )
+                                                val savedFile = ImageEnhancementCache.saveToCache(mangaId, chapterId, pageIndex, configHash, result, pageVariant)
                                                 if (savedFile != null) {
                                                     logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant saved to cache: ${savedFile.absolutePath}" }
                                                 } else {
