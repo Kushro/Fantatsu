@@ -35,7 +35,8 @@ import kotlin.math.max
 import kotlin.math.min
 
 object ImageUtil {
-...
+    // ... other code ...
+
     fun mergeBitmaps(
         iBitmap: Bitmap,
         iBitmap2: Bitmap,
@@ -106,8 +107,7 @@ object ImageUtil {
         result.compress(Bitmap.CompressFormat.JPEG, 100, output.outputStream())
         return output
     }
-...
-}
 
-val getDisplayMaxHeightInPx: Int
-    get() = Resources.getSystem().displayMetrics.let { max(it.heightPixels, it.widthPixels) }
+    val displayMaxHeightInPx: Int
+        get() = Resources.getSystem().displayMetrics.let { max(it.heightPixels, it.widthPixels) }
+}
