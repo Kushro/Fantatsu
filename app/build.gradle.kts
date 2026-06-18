@@ -177,7 +177,6 @@ android {
 
     ndkVersion = "28.2.13676358"
 
-
     lint {
         abortOnError = false
         checkReleaseBuilds = false
